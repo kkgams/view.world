@@ -1,0 +1,25 @@
+{
+  "hostImports": {
+    "view.world": [
+      "/core/runtime.js",
+      "/util/undo.js",
+      "/util/view-canvas-base.js",
+      "/util/world-object-renderers.js"
+    ]
+  },
+  "packages": [
+    {
+      "entry": "views/view-world.js",
+      "files": {
+        "src/view.world/views/view-world.js": "views/view-world.js"
+      },
+      "kind": "view",
+      "name": "view.world",
+      "sha256": {
+        "src/view.world/views/view-world.js": "86a37f90f558e06d8633181bba72b8d0c70f5eea444a38ac47b2d264aed627f9"
+      },
+      "tag": "view-world"
+    }
+  ],
+  "repository": "view.world"
+}

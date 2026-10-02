@@ -1,0 +1,15 @@
+{
+  "hostImports": {
+    "view.world": [
+      "/core/runtime.js",
+      "/util/undo.js",
+      "/util/view-canvas-base.js",
+      "/util/world-object-renderers.js"
+    ]
+  },
+  "limits": "Parent must add source-bound LICENSE/NOTICE evidence before distribution.",
+  "transformation": "Blend entries remove only the other registration block; original source retained under upstream/.",
+  "upstream_sha256": {
+    "views/view-world.js": "86a37f90f558e06d8633181bba72b8d0c70f5eea444a38ac47b2d264aed627f9"
+  }
+}

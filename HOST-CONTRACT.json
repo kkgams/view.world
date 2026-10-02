@@ -1,0 +1,21 @@
+{
+  "dynamicImports": [],
+  "failurePolicy": "Missing imports, schemas, required config and providers must fail loudly; no optional defaults introduced.",
+  "guiValidationPending": "World editing, undo, object renderers and configured plugin calls",
+  "legacyLimits": [],
+  "requirements": [
+    "Browser DOM and custom elements",
+    "Project Config View ids, source and view-specific configuration",
+    "Configured runtime plugin/service providers",
+    "Host base/theme semantic CSS"
+  ],
+  "staticImports": {
+    "view.world": [
+      "/core/runtime.js",
+      "/util/undo.js",
+      "/util/view-canvas-base.js",
+      "/util/world-object-renderers.js"
+    ]
+  },
+  "supportedHost": "2.0.3"
+}
