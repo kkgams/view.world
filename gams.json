@@ -33,7 +33,7 @@
     },
     "views": {
       "view-world": {
-        "url": "src/view.world/views/view-world.js",
+        "url": "src/views/view-world.js",
         "label": "view-world",
         "internal": false,
         "config": {

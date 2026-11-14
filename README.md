@@ -1,30 +1,29 @@
-# view.world
+# World View
 
-One separately installable ZIP per View, never npm/OCI. Host contract: GAMS 2.0.3.
-Run npm test (Node 24, Python 3 stdlib). release.json binds package identities, deployment maps and hashes.
-Absolute imports enumerated in release.json are required Host-owned runtime/util/widget APIs; missing APIs, config or schemas are bugs, not optional fallbacks.
-Keep Project Config ids/tags and URLs as deployed. view-markdow spelling is deliberately unchanged.
-Blend 1D retains views/view-animation-blend-spaces.js; independently installed 2D requires views/view-animation-blend-space-2d.js in Project Config. No HTML/class behavior is rewritten.
-Install using scripts/release.py install (verified checksums), retain metadata under notices/project-units/<package>. Refuse all overwrite collisions.
-Dependencies (plugins, sibling Views, UI Services) remain Project configured; static Host imports are documented, not vendored.
-HOST-CONTRACT.json includes required dynamic widget paths and known legacy schema limits.
-GUI validation pending: World editing, undo, object renderers and configured plugin calls. No blanket E2E claim.
+World editing with configurable object renderers for [GAMS](https://github.com/kkgams/gams).
 
-## Local development and docs
+| View | Source → ZIP entry | Screenshot | License | Original work |
+| --- | --- | --- | --- | --- |
+| World editor (`view-world`) | `src/views/view-world.js` → `views/view-world.js` | Not available | [Apache-2.0](LICENSE), [notice](NOTICE) | GAMS contributors |
 
-Use Node.js 24, Python 3, Make, curl and unzip. `make build` checks canonical
-local JavaScript and Project configuration; `make test` runs the existing tests.
-`make open` opens this repository's `gams.json` in downloaded `tools/gams.app`
-(macOS Apple Silicon), with explicit `GAMS_APP_CWD` and no sibling checkout.
+## Development
 
-`make serve-docs` serves `docs/` using pinned wiki v1.4.0 (`DOCS_PORT` overrides 8080).
-`make validate-docs` validates it; `make docs` builds `build/site/`.
-Every push to `release` publishes docs through GitHub Pages independently of
-version tags. See [development details](docs/index.md) for setup and limitations.
+Requires Make, Node.js 24 (dependency-free syntax checks), Python 3, curl, unzip,
+zip and shasum. Local launch requires macOS Apple Silicon and network access on
+first use. It loads canonical local source and pinned released supporting Units,
+not neighboring checkouts. Use New or Open to load a world. The local Project
+uses the built-in point renderer; additional renderers must be configured explicitly.
 
-## Publication
+| Command | Purpose |
+| --- | --- |
+| `make open` | Download the released Host if absent, then open local `gams.json`. |
+| `make check` | Check JavaScript syntax. |
+| `make package` | Build `build.nosync/view.world.zip` and `SHA256SUMS`. |
+| `make serve-docs DOCS_PORT=8080` | Preview documentation with pinned wiki v1.4.0. |
+| `make validate-docs` | Validate documentation. |
+| `make docs` | Build `build.nosync/site/`. |
+| `make clean` | Remove `build.nosync/`, downloaded `tools/gams.app`, its `tools/gams-release-notices/` and identified configured downloads in `gams_modules/`; preserve supplied Units and refuse unmarked Host tools, tracked files or symlinked deletion paths. |
 
-Pushing a matching version tag authorizes the GitHub Release; no approval digest
-variables or special release branch are required. Tests, source/legal evidence,
-exact LICENSE/NOTICE payloads, deterministic archives, SHA256SUMS and no-overwrite
-checks remain mandatory. See `PUBLISHING.md`; this migration refreshes no evidence.
+Existing Host downloads are never updated implicitly; launch does not bypass
+Gatekeeper. Optional user inputs in `dev-assets/` are neither packaged nor cleaned.
+See [runtime requirements](docs/index.md#runtime-requirements).

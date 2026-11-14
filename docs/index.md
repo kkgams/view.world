@@ -1,58 +1,54 @@
 ---
-title: Development
+title: World View
 status: reference
 ---
 
-# view.world
+# World View
 
-## Local Project
+World editing with configurable object renderers for [GAMS](https://github.com/kkgams/gams).
 
-Use Node.js 24 and Python 3 (standard library), plus Make, curl and unzip.
-`make open` additionally requires macOS Apple Silicon.
+| View | Source → ZIP entry | Screenshot | Original work |
+| --- | --- | --- | --- |
+| World editor (`view-world`) | `src/views/view-world.js` → `views/view-world.js` | Not available | GAMS contributors |
 
-```sh
-make build
-make test
-make open
-```
+## Development
 
-Canonical JavaScript loads directly from `src/`; there is no compilation step.
-`make build` validates source hashes, imports, syntax and local Project configuration.
-`make open` runs that build and downloads the latest released GAMS Host into
-ignored `tools/gams.app` only when absent. It preserves accompanying notices in
-`tools/gams-release-notices` and explicitly sets `GAMS_APP_CWD` to this repository
-to open the local `gams.json`. Existing downloads are never updated implicitly;
-launch does not remove Gatekeeper quarantine. First use needs network access.
-Installed Units are cached in ignored `gams_modules/`. No sibling checkout is used.
+Requires Make, Node.js 24, Python 3, curl, zip, unzip and shasum. Launch requires
+macOS Apple Silicon. Supporting Units are pinned in `gams.json`; no sibling
+checkout is needed. Use New or Open to load a world. File selection and properties
+use pinned released Views.
 
-The editor starts with no world loaded. Use New or Open. This Project uses the built-in point renderer; configure additional modules explicitly in `ui.views.view-world.config.renderers` when needed. File selection and properties use pinned released Views.
+| Command | Purpose |
+| --- | --- |
+| `make open` | Open local source in the released Host with explicit `GAMS_APP_CWD` and `GAMS_CONFIG`. |
+| `make check` | Check JavaScript syntax without dependencies. |
+| `make package` | Build `view.world.zip` and `SHA256SUMS` under `build.nosync/`. |
+| `make serve-docs DOCS_PORT=8080` | Preview this wiki with pinned justgook/wiki v1.4.0. |
+| `make validate-docs` | Validate wiki content. |
+| `make docs` | Build `build.nosync/site/`. |
+| `make clean` | Delete generated `build.nosync/`, downloaded Host and notices under `tools/`, and identified configured downloads in `gams_modules/`; preserve supplied Units and refuse unmarked Host tools, tracked files and symlinked deletion paths. |
 
-Inputs under `dev-assets/` are ignored and not packaged. Only sources listed in
-`release.json` are deployed by existing release tooling. Runtime/UI behavior,
-package identities and version-tag publication are unchanged. Native GUI behavior
-is a separate check; `make -n open` does not verify it.
+First launch needs network access and preserves notices beside `tools/gams.app`.
+Existing downloads are not updated implicitly and Gatekeeper is not bypassed.
+User inputs in `dev-assets/` are neither packaged nor cleaned. JavaScript loads
+directly from `src/views/`; there is no compilation step.
 
-## Documentation
+## Runtime requirements
 
-```sh
-make serve-docs DOCS_PORT=8081
-make validate-docs
-make docs
-```
+The original integration contract targets GAMS 2.0.3. The View requires browser
+DOM, custom elements, Host semantic CSS and configured plugin/service providers.
+Missing required APIs, configuration or schemas are errors, not optional features.
+The local Project supplies filesystem/layout plugins, UI Services, file chooser
+and properties Views through explicit released pins.
 
-These targets use pinned `justgook/wiki` v1.4.0 and this repository's `docs/`.
-The independent preview port defaults to 8080. `make docs` builds the portable
-site in ignored `build/site/`; `make build-docs` is the same build. Engine
-downloads also stay under ignored `build/`.
-Every push to `release` builds with `make docs` and deploys GitHub Pages through
-`.github/workflows/pages.yml`, independently of version tags and publication
-approval variables. Enable GitHub Pages with GitHub Actions as its source.
+Host-owned imports are `/core/runtime.js`, `/util/undo.js`,
+`/util/view-canvas-base.js` and `/util/world-object-renderers.js`; their
+implementations are not bundled in the View ZIP.
 
-## Checks and publication
+The local Project uses the built-in point renderer. Configure additional renderer
+modules in `ui.views.view-world.config.renderers`, custom property inputs in
+`config.inputs`, and axis inversion in `config.invert`. The provided configuration
+starts with empty renderer/input mappings and both axis inversions disabled.
 
-Run `make check` and `make test` with Node.js 24 and Python 3. Existing tests cover
-source/release contracts, not native GUI workflows. The tag workflow, licenses,
-notices and legal evidence are unchanged. Added development files and docs are
-not included in legal evidence snapshots; exact-input approval requires separate
-review before publication. Existing publication gates remain strict; see the
-repository's `PUBLISHING.md` for the owner-controlled release process.
+Syntax checks do not verify native GUI editing, undo, object renderers or
+configured plugin calls.
