@@ -245,3 +245,132 @@ test("sidebar nesting and collapse leave canvas visibility and storage unchanged
     canvas.renderObjects(canvas.snapshot)
     assert.deepEqual(rows.map((row) => row.id), [4, 1])
 })
+
+test("table drops use top-first order and avoid no-op history", () => {
+    const world = state([leaf("a", 1, 2), leaf("b", 3, 4), leaf("c", 5, 6)])
+    assert.equal(world.dropObject(3, 2, "before"), false)
+    assert.equal(world.history.canUndo(), false)
+    assert.equal(world.dropObject(1, 3, "before"), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [2, 3, 1])
+    assert.equal(world.dropObject(1, 2, "after"), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [1, 2, 3])
+})
+
+test("nested drop restores subtree order, world positions and selection through undo/redo", () => {
+    const world = state([group("a", 100, 200), leaf("b", 20, 30, "a"), group("c", -10, -20), leaf("d", 5, 6, "c")])
+    world.selectObject(2)
+    const before = world.toStorageData()
+    const positions = new Map(world.objects.map((object) => [object.editorId, spatial.worldPosition(world.objects, object)]))
+    assert.equal(world.dropObject(1, 4, "before"), true)
+    assert.equal(world.activeObjectId, 1)
+    assert.equal(spatial.spatialParent(world.requireObject(1)), "c")
+    assert.deepEqual(world.objects.map((object) => object.editorId), [3, 4, 1, 2])
+    for (const object of world.objects) assert.deepEqual(spatial.worldPosition(world.objects, object), positions.get(object.editorId))
+    assert.equal(world.history.toArray().length, 1)
+    const after = world.toStorageData()
+    world.undo()
+    assert.equal(world.activeObjectId, 2)
+    assert.equal(world.toStorageData(), before)
+    world.redo()
+    assert.equal(world.activeObjectId, 1)
+    assert.equal(world.toStorageData(), after)
+})
+
+test("inside adds topmost child and before root detaches without moving world coords", () => {
+    const world = state([group("a", 10, 20), leaf("b", 1, 2, "a"), group("c", 30, 40), leaf("d", 3, 4, "c")])
+    assert.equal(world.dropObject(1, 3, "inside"), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [3, 4, 1, 2])
+    assert.equal(spatial.spatialParent(world.requireObject(1)), "c")
+    assert.equal(world.dropObject(1, 3, "before"), true)
+    assert.equal(spatial.spatialParent(world.requireObject(1)), "")
+    assert.deepEqual(spatial.worldPosition(world.objects, world.requireObject(2)), { x: 11, y: 22 })
+})
+
+test("drop gathers interleaved descendants preserving their internal stacking", () => {
+    const world = state([group("a", 1, 2), leaf("b", 3, 4), leaf("c", 5, 6, "a"), group("d", 7, 8, "a"), leaf("e", 9, 10, "d")])
+    assert.equal(world.dropObject(1, 2, "before"), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [2, 1, 3, 4, 5])
+})
+
+test("canDrop and mutation reject invalid targets, placements and descendant cycles atomically", () => {
+    const world = state([group("a", 10, 20), group("b", 1, 2, "a"), leaf("c", 3, 4, "b")])
+    const before = world.toStorageData()
+    for (const args of [[1, 1, "before"], [1, 2, "inside"], [1, 3, "after"], [2, 3, "before"], [2, 3, "inside"], [1, 99, "before"], [99, 1, "after"], [3, 1, "bad"]]) {
+        assert.equal(world.canDropObject(...args), false)
+        assert.equal(world.dropObject(...args), false)
+    }
+    assert.equal(world.toStorageData(), before)
+    assert.equal(world.history.canUndo(), false)
+})
+
+test("legacy blocks retain labels and reject splits identically in preview and mutation", () => {
+    const world = state([{ x: 1, y: 2, group: "A" }, { x: 3, y: 4, group: "A" }, { x: 5, y: 6 }, { x: 7, y: 8, group: "B" }, { x: 9, y: 10, group: "B" }])
+    for (const args of [[3, 1, "before"], [3, 5, "after"], [1, 4, "before"]]) {
+        assert.equal(world.canDropObject(...args), false)
+        assert.equal(world.dropObject(...args), false)
+    }
+    assert.equal(world.history.canUndo(), false)
+    assert.equal(world.dropObject(1, 2, "before"), true)
+    assert.deepEqual(world.objects.map((object) => object.props.group || ""), ["A", "A", "", "B", "B"])
+    assert.equal(world.requireObject(1).spatial, undefined)
+})
+
+test("spatial Up/Down moves whole sibling subtrees using drop semantics", () => {
+    const world = state([group("a", 1, 2), leaf("b", 3, 4, "a"), group("c", 5, 6), leaf("d", 7, 8, "c")])
+    assert.equal(world.moveObject(1, 1), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [3, 4, 1, 2])
+    assert.equal(world.moveObject(1, 1), false)
+    world.undo()
+    assert.deepEqual(world.objects.map((object) => object.editorId), [1, 2, 3, 4])
+})
+
+test("rerender cancels pending drag; collapsed targets hide but retain moved descendants", () => {
+    const world = state([group("a", 10, 20), group("b", 30, 40), leaf("c", 1, 2, "a")])
+    const canvas = view(world)
+    let cancelled = 0
+    const rows = []
+    canvas.tableDragDrop = { cancel() { cancelled++ } }
+    canvas.collapsedGroups = new Set(["spatial:2"])
+    canvas.objectsElement = { replaceChildren() { rows.length = 0 }, appendChild(row) { rows.push(row) } }
+    canvas.createObjectRow = (object) => ({ id: object.editorId, firstChild: { prepend() {} } })
+    assert.equal(world.dropObject(1, 2, "inside"), true)
+    canvas.snapshot = world.snapshot()
+    canvas.renderObjects(canvas.snapshot)
+    assert.deepEqual(rows.map((row) => row.id), [2])
+    canvas.collapsedGroups.delete("spatial:2")
+    canvas.renderObjects(canvas.snapshot)
+    assert.deepEqual(rows.map((row) => row.id), [2, 1, 3])
+    assert.equal(cancelled, 2)
+})
+
+for (const [placement, roots] of [["before", [4, 2, 5, 1]], ["after", [4, 2, 1, 5]]]) {
+    test(`drop ${placement} interleaved target subtree matches the displayed sibling slot`, () => {
+        const world = state([group("a", 10, 20), leaf("b", 30, 40), leaf("child", 1, 2, "a"), leaf("c", 50, 60), leaf("d", 70, 80)])
+        const before = world.toStorageData()
+        const positions = new Map(world.objects.map((object) => [object.editorId, spatial.worldPosition(world.objects, object)]))
+        assert.equal(world.dropObject(5, 1, placement), true)
+        assert.deepEqual(world.objects.filter((object) => !spatial.spatialParent(object)).toReversed().map((object) => object.editorId), roots)
+        for (const object of world.objects) assert.deepEqual(spatial.worldPosition(world.objects, object), positions.get(object.editorId))
+        const after = world.toStorageData()
+        world.undo()
+        assert.equal(world.toStorageData(), before)
+        world.redo()
+        assert.equal(world.toStorageData(), after)
+    })
+}
+
+test("arrow movement respects sibling adjacency with interleaved target descendants", () => {
+    const world = state([group("a", 10, 20), leaf("b", 30, 40), leaf("child", 1, 2, "a"), leaf("c", 50, 60)])
+    assert.equal(world.moveObject(2, -1), true)
+    assert.deepEqual(world.objects.filter((object) => !spatial.spatialParent(object)).toReversed().map((object) => object.editorId), [4, 1, 2])
+    assert.deepEqual(world.objects.map((object) => object.editorId), [2, 1, 3, 4])
+})
+
+test("ordinary root arrow movement crosses a spatial sibling subtree, not its children", () => {
+    const world = state([group("a", 10, 20), leaf("child", 1, 2, "a"), { x: 30, y: 40 }])
+    assert.equal(world.moveObject(3, -1), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [3, 1, 2])
+    assert.equal(world.requireObject(3).spatial, undefined)
+    assert.equal(world.moveObject(3, 1), true)
+    assert.deepEqual(world.objects.map((object) => object.editorId), [1, 2, 3])
+})

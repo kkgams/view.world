@@ -32,5 +32,8 @@ The ZIP includes `views/view-world.js` and `world-renderers/{rectangle,sprite,ti
 Projects select renderer modules through `$file` archive entries in
 `ui.views.view-world.config.renderers`; see [renderer configuration](docs/index.md#renderer-configuration).
 
-Spatial groups support nested parent-relative positions and movement. See
+Drag table rows before/after objects or into spatial groups to reorder/reparent
+whole subtrees while preserving world positions. Arrow buttons and the Parent
+selector remain keyboard alternatives. Spatial groups support nested
+parent-relative positions and movement. See
 [spatial groups](docs/index.md#spatial-groups) for controls, storage and deletion policy.

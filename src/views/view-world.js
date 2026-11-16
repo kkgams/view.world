@@ -2,6 +2,7 @@ import { runtime, unwrap } from "/core/runtime.js"
 import { UndoHistory } from "/util/undo.js"
 import { ViewCanvasBase } from "/util/view-canvas-base.js"
 import { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } from "../spatial.mjs"
+import { bindDragDrop } from "../drag-drop.mjs"
 import { WorldObjectRendererRegistry } from "../world-object-renderers.js"
 
 const GRID_SIZE = 16
@@ -326,6 +327,65 @@ class WorldState {
         return true
     }
 
+    // The array stacks bottom-to-top; the table displays siblings top-first.
+    planObjectDrop(sourceId, targetId, placement) {
+        if (!["before", "after", "inside"].includes(placement)) return null
+        const source = this.objects.find((object) => object.editorId === sourceId)
+        const target = this.objects.find((object) => object.editorId === targetId)
+        if (!source || !target || source === target) return null
+        if (placement === "inside" && !isSpatialGroup(target)) return null
+        const movingIds = spatialDescendants(this.objects, source)
+        if (movingIds.has(targetId)) return null
+        const parentId = placement === "inside" ? target.spatial.id : spatialParent(target)
+        const next = cloneObjects(this.objects)
+        const moved = next.find((object) => object.editorId === sourceId)
+        if (spatialParent(source) !== parentId) {
+            const position = worldPosition(this.objects, source)
+            const parent = parentId ? this.objects.find((object) => object.spatial !== undefined && object.spatial.id === parentId) : null
+            const origin = parent ? worldPosition(this.objects, parent) : { x: 0, y: 0 }
+            if (moved.spatial === undefined) moved.spatial = { id: this.newSpatialId() }
+            if (parentId) moved.spatial.parent = parentId
+            else delete moved.spatial.parent
+            moved.x = position.x - origin.x
+            moved.y = position.y - origin.y
+        }
+        const moving = next.filter((object) => movingIds.has(object.editorId))
+        const remaining = next.filter((object) => !movingIds.has(object.editorId))
+        const targetIds = spatialDescendants(remaining, target)
+        const targetBlock = remaining.filter((object) => targetIds.has(object.editorId))
+        // Existing files may interleave this target's descendants with siblings.
+        // Gather only the target subtree at its displayed sibling boundary so
+        // the promised before/after slot remains adjacent to its heading.
+        const boundary = remaining.findIndex((object) => object.editorId === targetId)
+        const insertion = remaining.slice(0, boundary).filter((object) => !targetIds.has(object.editorId)).length
+        const ordered = remaining.filter((object) => !targetIds.has(object.editorId))
+        const blocks = placement === "after" ? [...moving, ...targetBlock] : [...targetBlock, ...moving]
+        ordered.splice(insertion, 0, ...blocks)
+        // Legacy labels are immutable here; a drop must not split their blocks.
+        const closed = new Set()
+        let current = ""
+        for (const object of ordered) {
+            const group = objectGroup(object)
+            if (group === current) continue
+            if (current) closed.add(current)
+            if (group && closed.has(group)) return null
+            current = group
+        }
+        validateSpatial(ordered)
+        return ordered
+    }
+
+    canDropObject(sourceId, targetId, placement) {
+        return this.planObjectDrop(sourceId, targetId, placement) !== null
+    }
+
+    dropObject(sourceId, targetId, placement) {
+        const next = this.planObjectDrop(sourceId, targetId, placement)
+        if (!next || JSON.stringify(next) === JSON.stringify(this.objects)) return false
+        this.replaceObjectsCommand("Move object in hierarchy", cloneObjects(this.objects), next, sourceId)
+        return true
+    }
+
     deleteObject(editorId) {
         const object = this.requireObject(editorId)
         const previous = cloneObjects(this.objects)
@@ -461,7 +521,13 @@ class WorldState {
     moveObject(editorId, direction) {
         assert(direction === -1 || direction === 1, "world object move direction must be -1 or 1")
         const index = this.indexForId(editorId)
-        const group = objectGroup(this.objects[index])
+        const object = this.objects[index]
+        if (object.spatial !== undefined || (!objectGroup(object) && this.objects.some(isSpatialGroup))) {
+            const siblings = this.objects.filter((candidate) => spatialParent(candidate) === spatialParent(object))
+            const target = siblings[siblings.indexOf(object) + direction]
+            return target ? this.dropObject(editorId, target.editorId, direction === 1 ? "before" : "after") : false
+        }
+        const group = objectGroup(object)
         if (!group) return this.moveUnitForObject(editorId, direction)
         const targetIndex = index + direction
         if (targetIndex < 0 || targetIndex >= this.objects.length || objectGroup(this.objects[targetIndex]) !== group)
@@ -659,6 +725,8 @@ export class ViewWorld extends ViewCanvasBase {
         this.statusElement = null
         this.showGrid = true
         this.objectDrag = null
+        this.tableDragDrop = null
+        this.busy = false
         this.collapsedGroups = new Set()
         this.rendererRegistry = null
         this.rendererPreparationKey = ""
@@ -748,6 +816,8 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     disconnectedCallback() {
+        if (this.tableDragDrop) this.tableDragDrop.destroy()
+        this.tableDragDrop = null
         this.closeObjectTooltip()
         super.disconnectedCallback()
         if (this.rendererRegistry) this.rendererRegistry.dispose()
@@ -809,6 +879,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     bindEvents() {
+        this.bindObjectDragDrop()
         this.canvas.addEventListener("wheel", () => this.closeObjectTooltip())
         this.canvas.addEventListener("mousedown", () => this.closeObjectTooltip())
 
@@ -825,7 +896,21 @@ export class ViewWorld extends ViewCanvasBase {
         })
         this.objectsElement.addEventListener("keydown", async (event) => {
             const heading = event.target.closest('th[role="button"][aria-expanded]')
-            if (!(heading instanceof HTMLTableCellElement)) return
+            if (!(heading instanceof HTMLTableCellElement)) {
+                const row = event.target.closest("tr[data-object-id]")
+                if (!row || event.target !== row) return
+                if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                    event.preventDefault()
+                    const rows = [...this.objectsElement.querySelectorAll("tr[data-object-id]")]
+                    const next = rows[rows.indexOf(row) + (event.key === "ArrowUp" ? -1 : 1)]
+                    if (next) next.focus()
+                } else if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault()
+                    this.state.selectObject(Number(row.dataset.objectId))
+                    await this.refreshSnapshot("Object selected")
+                }
+                return
+            }
             if (event.key !== "Enter" && event.key !== " ") return
             event.preventDefault()
             await this.handleListAction(heading)
@@ -1214,6 +1299,11 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     renderObjects(snapshot) {
+        if (this.tableDragDrop) this.tableDragDrop.cancel()
+        const focused = document.activeElement
+        const focusRow = focused && this.objectsElement.contains(focused) ? focused.closest("tr[data-object-id]") : null
+        const focusId = focusRow ? focusRow.dataset.objectId : null
+        const focusAction = focusRow ? focused.dataset.action : null
         this.objectsElement.replaceChildren()
         if (snapshot.objects.length === 0) {
             const row = document.createElement("tr")
@@ -1243,6 +1333,66 @@ export class ViewWorld extends ViewCanvasBase {
             }
         }
         appendChildren("", 0)
+        if (focusId) {
+            const row = this.objectsElement.querySelector(`tr[data-object-id="${focusId}"]`)
+            if (row) {
+                const control = focusAction ? row.querySelector(`[data-action="${focusAction}"]`) : row
+                if (control) control.focus()
+            }
+        }
+    }
+
+    bindObjectDragDrop() {
+        this.tableDragDrop = bindDragDrop(this.objectsElement, {
+            itemSelector: "tr[data-object-id]",
+            getId: (row) => row.dataset.objectId,
+            getPlacement: ({ target, event }) => {
+                if (this.busy) return null
+                const object = this.state.requireObject(Number(target.dataset.objectId))
+                const bounds = target.getBoundingClientRect()
+                const fraction = (event.clientY - bounds.top) / bounds.height
+                if (isSpatialGroup(object)) return fraction < 0.25 ? "before" : fraction > 0.75 ? "after" : "inside"
+                return fraction < 0.5 ? "before" : "after"
+            },
+            canDrop: ({ sourceId, targetId, placement }) => !this.busy && this.state.canDropObject(Number(sourceId), Number(targetId), placement),
+            createGhost: ({ target, placement }) => {
+                const row = document.createElement("tr")
+                row.dataset.dragGhost = "true"
+                row.setAttribute("aria-hidden", "true")
+                const cell = document.createElement("td")
+                cell.colSpan = 3
+                const object = this.state.requireObject(Number(target.dataset.objectId))
+                cell.textContent = `Move ${placement === "inside" ? "into" : placement} ${objectDisplayName(object, this.state.objects.indexOf(object))}`
+                row.appendChild(cell)
+                return row
+            },
+            placeGhost: ({ ghost, target, placement }) => {
+                if (placement === "before") target.before(ghost)
+                else {
+                    let anchor = target
+                    if (placement === "after") {
+                        const ids = spatialDescendants(this.state.objects, this.state.requireObject(Number(target.dataset.objectId)))
+                        for (const row of this.objectsElement.querySelectorAll("tr[data-object-id]")) {
+                            if (ids.has(Number(row.dataset.objectId))) anchor = row
+                        }
+                    }
+                    anchor.after(ghost)
+                }
+            },
+            onDrop: ({ sourceId, targetId, placement }) => {
+                if (!this.state.dropObject(Number(sourceId), Number(targetId), placement)) return
+                if (placement === "inside") this.collapsedGroups.delete(`spatial:${Number(targetId)}`)
+                return this.refreshSnapshot("Object hierarchy/order updated").then(() => {
+                    const row = this.objectsElement.querySelector(`tr[data-object-id="${Number(sourceId)}"]`)
+                    if (row) row.focus()
+                }).catch(async (error) => {
+                    const message = errorMessage(error)
+                    this.setStatus(message, "danger")
+                    await runtime.call("ui.toast.error", { message })
+                    throw error
+                })
+            },
+        })
     }
 
     createGroupRow(group) {
@@ -1273,6 +1423,8 @@ export class ViewWorld extends ViewCanvasBase {
         assert(typeof grouped === "boolean", "view-world object grouped must be boolean")
         const row = document.createElement("tr")
         row.dataset.objectId = String(object.editorId)
+        row.draggable = !this.busy
+        row.tabIndex = 0
         if (object.editorId === this.snapshot.activeObjectId) row.setAttribute("aria-selected", "true")
 
         const nameCell = document.createElement(isSpatialGroup(object) ? "th" : "td")
@@ -1763,6 +1915,11 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     setBusy(busy) {
+        this.busy = busy
+        if (this.tableDragDrop) this.tableDragDrop.cancel()
+        for (const row of this.objectsElement.querySelectorAll("tr[data-object-id]")) {
+            row.draggable = !busy
+        }
         assert(this._headerControlsElement instanceof HTMLElement, "view-world missing header controls")
         for (const button of this._headerControlsElement.querySelectorAll("button")) button.disabled = busy
         if (!busy) this.renderHeaderControls(this.snapshot)

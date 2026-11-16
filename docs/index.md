@@ -97,11 +97,57 @@ collapse state is independent of spatial groups. Old arbitrary properties named
 `spatial` must be renamed before using this reserved field.
 
 Spatial hierarchy controls coordinates, **not compositing**: leaf objects draw
-in the original flat array order, regardless of parent; reparenting does not
-reorder them. Up/Down still reorders flat records (or legacy organizational
-blocks); moving a spatial group record does not reorder its descendants. Groups
+in flat array order, regardless of parent; changing Parent in the inspector does
+not reorder them. Table drops reorder the moved subtree together; spatial Up/Down
+uses the same sibling/subtree operation. Legacy organizational heading arrows
+retain their block behavior. Groups
 have editor bounds/markers, not renderer artwork. There is no rotation, scale,
 clipping or alternate world DSL.
+
+## Table drag/drop
+
+Drag an object row onto another row: ordinary rows use their upper/lower halves
+for **before/after**; spatial group rows use their upper/lower quarters for
+**before/after** and their center for **inside**. Before/after means top-first
+sidebar order and adopts the target's parent. Inside adds a topmost child and
+expands a collapsed target after a successful move. A group moves with all its
+descendants, preserving their internal stacking and world positions. If stored
+subtrees are interleaved, the moved and target subtrees are gathered at the target's
+sibling boundary so the resulting order matches the displayed slot. The plain
+text ghost describes the promised placement; drop on that ghost to commit.
+Outlined ghost styling requires the updated shared Host CSS; older released
+Hosts still display the text. No View-local styling or Host copy is bundled.
+
+Self/descendant targets, missing targets and non-group inside targets are
+rejected. Legacy `group` labels never change during drops; moves that would split
+a contiguous legacy block are rejected in both preview and mutation. Legacy
+headings are not draggable. No-op drops add no history. One undo command restores
+parent/local coordinates, flat order and selection; collapse state is UI-only.
+Pending drags cancel before table rerender, during busy operations and on unmount.
+
+Focus rows and use Up/Down to navigate, Enter/Space to select. Row arrow buttons
+reorder spatial siblings with their subtrees; the Parent selector provides
+keyboard reparenting. Group headings retain Enter/Space collapse controls.
+
+### Local controller API
+
+Canonical `src/drag-drop.mjs` exports `bindDragDrop(root, options)`, returning
+`cancel()` and `destroy()`. Make inlines this module for the Host blob loader;
+it is View-owned reusable behavior, not a new Host utility. The caller sets
+`draggable="true"`, supplies valid markup and keyboard alternatives, calls
+`cancel()` before replacing items and `destroy()` on disconnect, and handles
+`onDrop` failures. No table tags, World state, styling or axis geometry are built
+into the controller. Options:
+
+| Callback/option | Contract |
+| --- | --- |
+| `itemSelector` | Selector for draggable items under root. |
+| `getId(item)` | Stable string ID. World converts IDs to numeric editor IDs. |
+| `getPlacement({source,target,event})` | `before`, `after`, `inside`, or `null`. |
+| `canDrop({sourceId,targetId,placement})` | Domain validation; World shares its planner with mutation. |
+| `createGhost({source,target,placement})` | Valid container child Element; World supplies `tr`/`td`, `data-drag-ghost="true"` and `aria-hidden="true"`. |
+| `placeGhost({ghost,target,placement})` | Insert the ghost at its promised location. |
+| `onDrop({sourceId,targetId,placement})` | Apply the validated local move. |
 
 ## Renderer configuration
 

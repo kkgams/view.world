@@ -20,4 +20,9 @@ spatial = (ROOT / "src/spatial.mjs").read_text().replace("export function", "fun
 spatial_inline = "const { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } = (() => {\n" + spatial + "\nreturn { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants }\n})()"
 if view.count(spatial_import) != 1:
     raise SystemExit("Expected spatial import")
-output.write_text(view.replace(view_import, inline).replace(spatial_import, spatial_inline))
+drag_import = 'import { bindDragDrop } from "../drag-drop.mjs"'
+drag = (ROOT / "src/drag-drop.mjs").read_text().replace("export function", "function")
+if view.count(drag_import) != 1:
+    raise SystemExit("Expected drag/drop import")
+drag_inline = "const { bindDragDrop } = (() => {\n" + drag + "\nreturn { bindDragDrop }\n})()"
+output.write_text(view.replace(view_import, inline).replace(spatial_import, spatial_inline).replace(drag_import, drag_inline))
