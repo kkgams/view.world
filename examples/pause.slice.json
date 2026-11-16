@@ -1,0 +1,65 @@
+{
+  "format": "gams.nine",
+  "version": 1,
+  "image": "examples/nine.png",
+  "slices": [
+    {
+      "name": "menu-border",
+      "type": "nine",
+      "bounds": {
+        "x": 26,
+        "y": 155,
+        "width": 704,
+        "height": 759
+      },
+      "center": {
+        "x": 232,
+        "y": 297,
+        "width": 63,
+        "height": 137
+      }
+    },
+    {
+      "name": "menu-selected",
+      "type": "horizontal",
+      "bounds": {
+        "x": 754,
+        "y": 400,
+        "width": 667,
+        "height": 133
+      },
+      "center": {
+        "x": 183,
+        "y": 0,
+        "width": 333,
+        "height": 133
+      }
+    },
+    {
+      "name": "menu-item",
+      "type": "horizontal",
+      "bounds": {
+        "x": 750,
+        "y": 589,
+        "width": 664,
+        "height": 119
+      },
+      "center": {
+        "x": 145,
+        "y": 0,
+        "width": 260,
+        "height": 119
+      }
+    },
+    {
+      "name": "title",
+      "type": "region",
+      "bounds": {
+        "x": 783,
+        "y": 170,
+        "width": 642,
+        "height": 166
+      }
+    }
+  ]
+}

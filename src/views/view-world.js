@@ -3,6 +3,7 @@ import { UndoHistory } from "/util/undo.js"
 import { ViewCanvasBase } from "/util/view-canvas-base.js"
 import { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } from "../spatial.mjs"
 import { bindDragDrop } from "../drag-drop.mjs"
+import { resizeHandles, hitResizeHandle, resizeBounds } from "../resize.mjs"
 import { WorldObjectRendererRegistry } from "../world-object-renderers.js"
 
 const GRID_SIZE = 16
@@ -259,14 +260,14 @@ class WorldState {
         }
     }
 
-    addObject(x, y) {
+    addObject(x, y, props = {}) {
         assert(Number.isFinite(x), "world state add object x must be finite")
         assert(Number.isFinite(y), "world state add object y must be finite")
         const object = {
             editorId: this.allocateObjectId(),
             x: Math.round(x),
             y: Math.round(y),
-            props: {},
+            props: cloneProps(props, "world object props"),
         }
         const previousActive = this.activeObjectId
         this.executeDirtyCommand(
@@ -476,6 +477,19 @@ class WorldState {
             ),
         )
         this.dirty = true
+        return true
+    }
+
+    resizeObject(editorId, x, y, props) {
+        assert(Number.isInteger(x) && Number.isInteger(y), "world resize position must use integer pixels")
+        const nextProps = cloneProps(props, "world resized props")
+        const object = this.requireObject(editorId)
+        assert(!isSpatialGroup(object), "world spatial groups cannot be resized")
+        assert(objectGroup({ props: nextProps }) === objectGroup(object), "world resize cannot change organizational group")
+        if (x === object.x && y === object.y && JSON.stringify(nextProps) === JSON.stringify(object.props)) return false
+        const previous = cloneObjects(this.objects), next = cloneObjects(this.objects)
+        Object.assign(next[this.indexForId(editorId)], { x, y, props: nextProps })
+        this.replaceObjectsCommand("Resize object", previous, next, editorId)
         return true
     }
 
@@ -725,6 +739,8 @@ export class ViewWorld extends ViewCanvasBase {
         this.statusElement = null
         this.showGrid = true
         this.objectDrag = null
+        this.resizeDrag = null
+        this.resizeCleanup = null
         this.tableDragDrop = null
         this.busy = false
         this.collapsedGroups = new Set()
@@ -737,6 +753,9 @@ export class ViewWorld extends ViewCanvasBase {
         this.invertY = false
         this.propertyInputs = {}
         this.syncingDataSource = false
+        this.rendererPanels = []
+        this.rendererGeneration = 0
+        this.initializingRenderers = true
     }
 
     connectedCallback() {
@@ -810,12 +829,17 @@ export class ViewWorld extends ViewCanvasBase {
 
         super.connectedCallback()
         this.bindEvents()
-        this.setData(this.snapshot, { autoFit: false })
+        this.snapshot = validateSnapshot(this.state.snapshot())
         this.renderSnapshot(this.snapshot)
         void this.initializeRenderers()
     }
 
     disconnectedCallback() {
+        this.rendererGeneration++
+        this.initializingRenderers = true
+        delete this.dataset.ready
+        this.cancelResize(false)
+        this.disposeRendererPanels()
         if (this.tableDragDrop) this.tableDragDrop.destroy()
         this.tableDragDrop = null
         this.closeObjectTooltip()
@@ -826,6 +850,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     async initializeRenderers() {
+        const generation = ++this.rendererGeneration
         assert(
             this.viewConfig && typeof this.viewConfig === "object" && !Array.isArray(this.viewConfig),
             "view-world requires view config",
@@ -841,10 +866,88 @@ export class ViewWorld extends ViewCanvasBase {
         this.invertY = inversion.y
         this.propertyInputs = parsePropertyInputs(this.viewConfig.config)
         this.setBusy(true)
-        this.rendererRegistry = await WorldObjectRendererRegistry.create(this.viewConfig.config, createPointRenderer())
-        await this.prepareRenderers(this.snapshot)
-        this.setBusy(false)
-        await this.bootstrap()
+        const registry = await WorldObjectRendererRegistry.create(this.viewConfig.config, createPointRenderer())
+        if (generation !== this.rendererGeneration || !this.isConnected) {
+            registry.dispose()
+            return
+        }
+        this.rendererRegistry = registry
+        try {
+            await this.prepareRenderers(this.snapshot)
+            if (generation !== this.rendererGeneration || !this.isConnected) return
+            this.mountRendererPanels(generation)
+            this.initializingRenderers = false
+            this.setData(this.snapshot, { autoFit: false })
+            this.renderSnapshot(this.snapshot)
+            this.setBusy(false)
+            if (!this.state.loaded) await this.bootstrap()
+        } catch (error) {
+            // Disconnect invalidates pending renderer preparation and its UI callbacks.
+            if (generation !== this.rendererGeneration || !this.isConnected) return
+            throw error
+        }
+    }
+
+    mountRendererPanels(generation) {
+        assert(this.rendererPanels.length === 0, "world renderer panels are already mounted")
+        const panels = this.rendererRegistry.createSidebarPanels({
+            addObject: properties => this.addRendererObject(properties, generation),
+        })
+        const mounted = []
+        try {
+            for (const panel of panels) {
+                assert(panel.element instanceof HTMLFieldSetElement && !panel.element.parentNode,
+                    "world renderer sidebar panel must provide a detached fieldset")
+            }
+            const anchor = this.historyElement.closest("fieldset")
+            for (const panel of panels) {
+                anchor.before(panel.element)
+                mounted.push(panel.element)
+            }
+            this.rendererPanels = panels
+            this.renderRendererPanels(this.snapshot)
+        } catch (error) {
+            for (const panel of panels) panel.dispose()
+            for (const element of mounted) element.remove()
+            this.rendererPanels = []
+            throw error
+        }
+    }
+
+    disposeRendererPanels() {
+        for (const panel of this.rendererPanels) {
+            panel.dispose()
+            panel.element.remove()
+        }
+        this.rendererPanels = []
+    }
+
+    renderRendererPanels(snapshot) {
+        for (const panel of this.rendererPanels) panel.element.disabled = this.busy || !snapshot.loaded
+    }
+
+    async addRendererObject(properties, generation) {
+        assert(generation === this.rendererGeneration && this.isConnected, "world renderer panel is no longer active")
+        assert(!this.busy && this.state.loaded, "Create or open a world before adding renderer objects")
+        const props = cloneProps(properties, "world renderer object properties")
+        const registry = this.rendererRegistry
+        this.setBusy(true)
+        try {
+            const point = this.canvasToProjectPoint({
+                x: (this.canvas.width / 2 - this.offsetX) / this.scale,
+                y: (this.canvas.height / 2 - this.offsetY) / this.scale,
+            })
+            await registry.prepare([
+                ...this.state.objects.filter(object => !isSpatialGroup(object)),
+                { x: point.x, y: point.y, props },
+            ])
+            assert(generation === this.rendererGeneration && this.isConnected, "world renderer panel is no longer active")
+            const editorId = this.state.addObject(point.x, point.y, props)
+            await this.refreshSnapshot("Object added")
+            return editorId
+        } finally {
+            if (generation === this.rendererGeneration && this.isConnected) this.setBusy(false)
+        }
     }
 
     createHeaderControlsElement() {
@@ -1142,8 +1245,25 @@ export class ViewWorld extends ViewCanvasBase {
             }),
         )
         if (!payload || payload.cancelled) return
-        this.state.setObjectProps(editorId, payload.data)
-        await this.refreshSnapshot("Object properties updated")
+        const nextProps = cloneProps(payload.data, "world object props")
+        const nextObjects = this.state.objects.map(object => object.editorId === editorId ? { ...object, props: nextProps } : object)
+        this.setBusy(true)
+        try {
+            try {
+                await this.rendererRegistry.prepare(nextObjects.filter(object => !isSpatialGroup(object)))
+            } catch (error) {
+                // Other renderer caches may already have changed; restore the unchanged world.
+                await this.rendererRegistry.prepare(this.state.objects.filter(object => !isSpatialGroup(object)))
+                const message = errorMessage(error)
+                this.setStatus(message, "danger")
+                await runtime.call("ui.toast.error", { message })
+                return
+            }
+            this.state.setObjectProps(editorId, nextProps)
+            await this.refreshSnapshot("Object properties updated")
+        } finally {
+            this.setBusy(false)
+        }
     }
 
     async applyPosition() {
@@ -1237,6 +1357,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     async refreshSnapshot(status, { autoFit = false } = {}) {
+        this.cancelResize(false)
         this.closeObjectTooltip()
         const snapshot = validateSnapshot(this.state.snapshot())
         await this.prepareRenderers(snapshot)
@@ -1255,8 +1376,9 @@ export class ViewWorld extends ViewCanvasBase {
                 .toSorted((a, b) => a.editorId - b.editorId),
         )
         if (key === this.rendererPreparationKey) return
-        await this.rendererRegistry.prepare(renderObjects)
-        this.rendererPreparationKey = key
+        const registry = this.rendererRegistry
+        await registry.prepare(renderObjects)
+        if (registry === this.rendererRegistry) this.rendererPreparationKey = key
     }
 
     refreshLiveSnapshot() {
@@ -1278,6 +1400,7 @@ export class ViewWorld extends ViewCanvasBase {
         this.renderInspector(snapshot)
         this.renderHistory(snapshot)
         this.renderHeaderControls(snapshot)
+        this.renderRendererPanels(snapshot)
     }
 
     pruneCollapsedGroups(snapshot) {
@@ -1639,6 +1762,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     drawContent(ctx, data) {
+        if (this.initializingRenderers) return
         const snapshot = data || this.snapshot
         if (!snapshot) return
         if (this.showGrid) this.drawGrid(ctx)
@@ -1748,12 +1872,125 @@ export class ViewWorld extends ViewCanvasBase {
         ctx.arc(anchor.x, anchor.y, 4 / this.scale, 0, Math.PI * 2)
         ctx.fill()
         ctx.stroke()
+        if (selected && this.canResizeObject(object)) {
+            const size = this.resizeScreenSize(7)
+            ctx.lineWidth = 1 / this.scale
+            for (const handle of resizeHandles(this.objectCanvasBounds(object))) {
+                ctx.fillRect(handle.x - size.x / 2, handle.y - size.y / 2, size.x, size.y)
+                ctx.strokeRect(handle.x - size.x / 2, handle.y - size.y / 2, size.x, size.y)
+            }
+        }
         ctx.restore()
     }
 
+    canResizeObject(object) {
+        return !isSpatialGroup(object) && !objectLocked(object) && this.rendererRegistry.canResize(object)
+    }
+
+    resizeScreenSize(pixels) {
+        const rect = this.canvas.getBoundingClientRect()
+        return { x: pixels * this.canvas.width / (rect.width * this.scale), y: pixels * this.canvas.height / (rect.height * this.scale) }
+    }
+
+    selectedResizeHandle(point) {
+        const object = this.snapshot.objects.find(object => object.editorId === this.snapshot.activeObjectId)
+        if (!object || !this.canResizeObject(object)) return null
+        const tolerance = this.resizeScreenSize(6)
+        const handle = hitResizeHandle(this.objectCanvasBounds(object), this.projectToCanvasPoint(point), tolerance.x, tolerance.y)
+        return handle ? { ...handle, object } : null
+    }
+
+    startResize(handle, point) {
+        this.closeObjectTooltip()
+        this.resizeDrag = {
+            edge: handle.edge,
+            before: cloneObject(handle.object),
+            next: cloneObject(handle.object),
+            bounds: this.objectCanvasBounds(handle.object),
+            limits: this.rendererRegistry.resizeLimits(handle.object),
+            anchor: this.projectToCanvasPoint(worldPosition(this.snapshot.objects, handle.object)),
+            pointer: this.projectToCanvasPoint(point),
+        }
+        this.canvas.style.cursor = handle.cursor
+        this.bindResizeGesture()
+    }
+
+    bindResizeGesture() {
+        const doc = this.canvas.ownerDocument
+        const move = event => { if (event.target !== this.canvas) this.onCanvasMouseMove(event) }
+        const up = event => { if (event.target !== this.canvas) this.onCanvasMouseUp(event) }
+        const key = event => {
+            if (event.key !== "Escape" && event.key !== " ") return
+            event.preventDefault()
+            event.stopPropagation()
+            if (event.key === "Escape") this.cancelResize()
+        }
+        const blur = () => this.cancelResize()
+        doc.addEventListener("mousemove", move)
+        doc.addEventListener("mouseup", up)
+        doc.addEventListener("keydown", key, true)
+        doc.defaultView.addEventListener("blur", blur)
+        this.resizeCleanup = () => {
+            doc.removeEventListener("mousemove", move)
+            doc.removeEventListener("mouseup", up)
+            doc.removeEventListener("keydown", key, true)
+            doc.defaultView.removeEventListener("blur", blur)
+        }
+    }
+
+    finishResizeGesture() {
+        this.resizeDrag = null
+        if (this.resizeCleanup) this.resizeCleanup()
+        this.resizeCleanup = null
+        this.canvas.style.cursor = "default"
+    }
+
+    cancelResize(refresh = true) {
+        if (!this.resizeDrag) return
+        this.finishResizeGesture()
+        if (refresh) this.refreshLiveSnapshot()
+    }
+
+    updateResize(point) {
+        try {
+            const drag = this.resizeDrag
+            const pointer = this.projectToCanvasPoint(point)
+            const target = resizeBounds(drag.bounds, drag.edge, pointer.x - drag.pointer.x, pointer.y - drag.pointer.y, drag.limits)
+            if (Object.keys(target).every(key => target[key] === drag.bounds[key])) {
+                drag.next = cloneObject(drag.before)
+            } else {
+                const width = target.maxX - target.minX, height = target.maxY - target.minY
+                const patch = cloneProps(this.rendererRegistry.resize(drag.before, { width, height }), "world resize patch")
+                const next = { ...drag.before, props: { ...drag.before.props, ...patch } }
+                const local = this.rendererRegistry.bounds(next)
+                assert(Math.abs(local.maxX - local.minX - width) < 1e-6 && Math.abs(local.maxY - local.minY - height) < 1e-6,
+                    "world renderer resize must produce the requested dimensions")
+                const delta = this.canvasToProjectPoint({ x: target.minX - local.minX - drag.anchor.x, y: target.minY - local.minY - drag.anchor.y })
+                next.x = Math.round(drag.before.x + delta.x)
+                next.y = Math.round(drag.before.y + delta.y)
+                drag.next = next
+            }
+            const snapshot = this.state.snapshot()
+            snapshot.objects = snapshot.objects.map(object => object.editorId === drag.before.editorId ? cloneObject(drag.next) : object)
+            this.snapshot = validateSnapshot(snapshot)
+            this.setData(this.snapshot, { autoFit: false })
+            this.renderSnapshot(this.snapshot)
+        } catch (error) {
+            this.cancelResize()
+            throw error
+        }
+    }
+
     onCanvasMouseDown(event) {
-        if (event.button !== 0 || !this.state.loaded) return
+        if (event.button !== 0 || !this.state.loaded || this.busy) return
         const point = this.getWorldPoint(event.clientX, event.clientY)
+        const handle = this.selectedResizeHandle(point)
+        if (handle) {
+            event.preventDefault()
+            this.focus()
+            this.startResize(handle, point)
+            return
+        }
         const object = this.hitTest(point)
         this.focus()
         if (!object) {
@@ -1774,6 +2011,12 @@ export class ViewWorld extends ViewCanvasBase {
 
     onCanvasMouseMove(event) {
         const point = this.getWorldPoint(event.clientX, event.clientY)
+        if (this.resizeDrag) {
+            if ((event.buttons & 1) === 0) { this.cancelResize(); return }
+            this.canvas.style.cursor = `${this.resizeDrag.edge}-resize`
+            this.updateResize(point)
+            return
+        }
         if (this.objectDrag) {
             this.state.moveObjectLive(
                 this.objectDrag.editorId,
@@ -1784,16 +2027,31 @@ export class ViewWorld extends ViewCanvasBase {
             return
         }
 
+        const handle = this.selectedResizeHandle(point)
+        if (handle) {
+            this.closeObjectTooltip()
+            this.canvas.style.cursor = handle.cursor
+            return
+        }
         const object = this.hitTest(point)
+        this.canvas.style.cursor = object ? "pointer" : "default"
         const nextHoverObjectId = object ? object.editorId : 0
         if (nextHoverObjectId === this.hoverObjectId) return
         this.closeObjectTooltip()
         this.hoverObjectId = nextHoverObjectId
-        this.canvas.style.cursor = object ? "pointer" : "default"
         if (object) this.openObjectTooltip(object, event)
     }
 
-    onCanvasMouseUp(_event) {
+    onCanvasMouseUp(event) {
+        if (this.resizeDrag) {
+            if (event.button !== 0) return
+            this.updateResize(this.getWorldPoint(event.clientX, event.clientY))
+            const next = this.resizeDrag.next
+            this.finishResizeGesture()
+            const changed = this.state.resizeObject(next.editorId, next.x, next.y, next.props)
+            void this.refreshSnapshot(changed ? "Object resized" : "Size unchanged")
+            return
+        }
         if (!this.objectDrag) return
         const drag = this.objectDrag
         const object = this.state.requireObject(drag.editorId)
@@ -1808,6 +2066,7 @@ export class ViewWorld extends ViewCanvasBase {
 
     onCanvasMouseLeave(event) {
         this.closeObjectTooltip()
+        if (this.resizeDrag) return
         if (this.canvas) this.canvas.style.cursor = "default"
         if (!this.objectDrag || (event.buttons & 1) !== 0) return
         this.onCanvasMouseUp(event)
@@ -1915,6 +2174,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     setBusy(busy) {
+        if (busy) this.cancelResize()
         this.busy = busy
         if (this.tableDragDrop) this.tableDragDrop.cancel()
         for (const row of this.objectsElement.querySelectorAll("tr[data-object-id]")) {
@@ -1923,6 +2183,7 @@ export class ViewWorld extends ViewCanvasBase {
         assert(this._headerControlsElement instanceof HTMLElement, "view-world missing header controls")
         for (const button of this._headerControlsElement.querySelectorAll("button")) button.disabled = busy
         if (!busy) this.renderHeaderControls(this.snapshot)
+        this.renderRendererPanels(this.snapshot)
     }
 
     setStatus(text, tone = "") {

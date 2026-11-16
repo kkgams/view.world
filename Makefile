@@ -2,7 +2,7 @@
 .DELETE_ON_ERROR:
 ARCHIVE := build.nosync/view.world.zip
 NOTICE_FILES := LICENSE NOTICE
-VIEW_SOURCES := src/views/view-world.js src/world-object-renderers.js src/spatial.mjs src/drag-drop.mjs
+VIEW_SOURCES := src/views/view-world.js src/world-object-renderers.js src/spatial.mjs src/drag-drop.mjs src/resize.mjs
 RENDERERS := $(wildcard src/world-renderers/*.js)
 VIEW := build.nosync/views/view-world.js
 export TMPDIR := $(abspath build.nosync/tmp)

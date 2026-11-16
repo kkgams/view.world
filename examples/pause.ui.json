@@ -1,0 +1,67 @@
+[
+  {
+    "x": 0,
+    "y": 0,
+    "name": "Pause menu",
+    "spatial": {
+      "id": "pause-menu",
+      "group": true
+    }
+  },
+  {
+    "x": 6,
+    "y": -884,
+    "name": "Border",
+    "render": "nine",
+    "nine": "examples/pause.slice.json",
+    "slice": "menu-border",
+    "width": 775,
+    "height": 887,
+    "spatial": {
+      "id": "pause-panel",
+      "parent": "pause-menu"
+    }
+  },
+  {
+    "x": 91,
+    "y": -920,
+    "name": "Title",
+    "render": "nine",
+    "nine": "examples/pause.slice.json",
+    "slice": "title",
+    "width": 642,
+    "height": 166,
+    "spatial": {
+      "id": "pause-title",
+      "parent": "pause-menu"
+    }
+  },
+  {
+    "x": 61,
+    "y": -711,
+    "name": "Selected item",
+    "render": "nine",
+    "nine": "examples/pause.slice.json",
+    "slice": "menu-selected",
+    "width": 667,
+    "height": 133,
+    "spatial": {
+      "id": "pause-selected",
+      "parent": "pause-menu"
+    }
+  },
+  {
+    "x": 60,
+    "y": -542,
+    "name": "Menu item",
+    "render": "nine",
+    "nine": "examples/pause.slice.json",
+    "slice": "menu-item",
+    "width": 664,
+    "height": 119,
+    "spatial": {
+      "id": "pause-item",
+      "parent": "pause-menu"
+    }
+  }
+]

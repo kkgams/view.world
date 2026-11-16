@@ -74,6 +74,16 @@ export function createWorldObjectRenderer({ config }) {
       ctx.strokeRect(x, y, rectangle.width, rectangle.height)
     },
 
+    resize(object, size) {
+      for (const field of ["width", "height"]) {
+        assert(
+          size && Number.isFinite(size[field]) && size[field] > 0,
+          "rectangle renderer resize " + field + " must be a positive finite number",
+        )
+      }
+      return { width: size.width, height: size.height }
+    },
+
     bounds(object) {
       const rectangle = rectangleData(object)
       const minX = -rectangle.width * origin[0]

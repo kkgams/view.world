@@ -66,7 +66,7 @@
           }
         },
         "config": {
-          "layout": "<view-world />"
+          "layout": "<view-world data-source=\"examples/pause.ui.json\" />"
         }
       }
     },
@@ -83,10 +83,7 @@
                 "render": "rectangle"
               },
               "config": {
-                "origin": [
-                  0,
-                  0
-                ]
+                "origin": [0, 0]
               }
             },
             "sprite": {
@@ -95,10 +92,7 @@
                 "render": "sprite"
               },
               "config": {
-                "origin": [
-                  0.5,
-                  0.5
-                ]
+                "origin": [0.5, 0.5]
               }
             },
             "tilemap": {
@@ -107,10 +101,16 @@
                 "render": "tilemap"
               },
               "config": {
-                "origin": [
-                  0,
-                  1
-                ]
+                "origin": [0, 1]
+              }
+            },
+            "nine": {
+              "url": "src/world-renderers/nine.js",
+              "match": {
+                "render": "nine"
+              },
+              "config": {
+                "origin": [0, 0]
               }
             }
           },

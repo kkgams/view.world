@@ -25,4 +25,9 @@ drag = (ROOT / "src/drag-drop.mjs").read_text().replace("export function", "func
 if view.count(drag_import) != 1:
     raise SystemExit("Expected drag/drop import")
 drag_inline = "const { bindDragDrop } = (() => {\n" + drag + "\nreturn { bindDragDrop }\n})()"
-output.write_text(view.replace(view_import, inline).replace(spatial_import, spatial_inline).replace(drag_import, drag_inline))
+resize_import = 'import { resizeHandles, hitResizeHandle, resizeBounds } from "../resize.mjs"'
+resize = (ROOT / "src/resize.mjs").read_text().replace("export function", "function")
+if view.count(resize_import) != 1:
+    raise SystemExit("Expected resize import")
+resize_inline = "const { resizeHandles, hitResizeHandle, resizeBounds } = (() => {\n" + resize + "\nreturn { resizeHandles, hitResizeHandle, resizeBounds }\n})()"
+output.write_text(view.replace(view_import, inline).replace(spatial_import, spatial_inline).replace(drag_import, drag_inline).replace(resize_import, resize_inline))

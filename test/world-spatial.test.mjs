@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import * as spatial from "../src/spatial.mjs"
+import * as resize from "../src/resize.mjs"
 
 // Substitute only the external history command boundary, not world logic.
 class History {
@@ -16,11 +17,22 @@ class History {
     get current() { return this.entries[this.cursor - 1] }
     dispose() {}
 }
+class Events {
+    listeners = new Map()
+    addEventListener(name, callback) { this.listeners.set(name, callback) }
+    removeEventListener(name, callback) { assert.equal(this.listeners.get(name), callback); this.listeners.delete(name) }
+}
 class Canvas {
-    constructor() { this.width = 800; this.height = 600 }
+    constructor() {
+        this.width = 800; this.height = 600; this.style = {}
+        this.ownerDocument = new Events()
+        this.ownerDocument.defaultView = new Events()
+    }
     getBoundingClientRect() { return { left: 5, top: 7, width: 400, height: 300 } }
 }
 class Registry {
+    canResize() { return false }
+    resizeLimits() { return { minWidth: 1, minHeight: 1 } }
     draw(ctx, object, frame) { ctx.save(); ctx.translate(object.x, object.y); ctx.marks.push({ id: object.editorId, x: ctx.x, y: ctx.y, frame }); ctx.restore() }
     bounds(object) { return { minX: 0, minY: 0, maxX: object.props.width || 12, maxY: object.props.height || 8 } }
 }
@@ -28,14 +40,21 @@ const source = readFileSync(new URL("../src/views/view-world.js", import.meta.ur
     .replace(/^import .*\n/gm, "")
     .replace("export class ViewWorld", "class ViewWorld")
     .split('if (!customElements.get("view-world"))')[0]
-const { WorldState, ViewWorld } = new Function("UndoHistory", "ViewCanvasBase", "WorldObjectRendererRegistry", "HTMLCanvasElement", "document", ...Object.keys(spatial), `${source}\nreturn { WorldState, ViewWorld }`)(History, class {}, Registry, Canvas, { createTextNode: (text) => text }, ...Object.values(spatial))
+const host = { call: async () => { throw new Error("Unexpected Host call") } }
+class PanelElement {
+    parentNode = null
+    disabled = false
+    removed = false
+    remove() { this.removed = true; this.parentNode = null }
+}
+const { WorldState, ViewWorld } = new Function("UndoHistory", "ViewCanvasBase", "WorldObjectRendererRegistry", "HTMLCanvasElement", "document", "runtime", "unwrap", "HTMLFieldSetElement", "HTMLElement", ...Object.keys(spatial), ...Object.keys(resize), `${source}\nreturn { WorldState, ViewWorld }`)(History, class { disconnectedCallback() {} }, Registry, Canvas, { createTextNode: (text) => text }, host, result => { if (Object.hasOwn(result, "err")) throw new Error(result.err); return result.ok }, PanelElement, PanelElement, ...Object.values(spatial), ...Object.values(resize))
 const group = (id, x, y, parent) => ({ x, y, spatial: { id, group: true, ...(parent ? { parent } : {}) } })
 const leaf = (id, x, y, parent) => ({ x, y, spatial: { id, ...(parent ? { parent } : {}) }, width: 20, height: 10 })
 function state(data) { const result = new WorldState(); result.open("world.json", JSON.stringify(data)); return result }
 function position(state, index) { return spatial.worldPosition(state.objects, state.objects[index]) }
 function view(state, invertX = false, invertY = false) {
     const result = Object.create(ViewWorld.prototype)
-    Object.assign(result, { state, snapshot: state.snapshot(), scale: 2, offsetX: 0, offsetY: 0, invertX, invertY, rendererRegistry: new Registry(), canvas: new Canvas() })
+    Object.assign(result, { state, snapshot: state.snapshot(), scale: 2, offsetX: 0, offsetY: 0, invertX, invertY, rendererRegistry: new Registry(), rendererPanels: [], rendererGeneration: 1, isConnected: true, dataset: {}, initializingRenderers: false, canvas: new Canvas() })
     return result
 }
 
@@ -373,4 +392,486 @@ test("ordinary root arrow movement crosses a spatial sibling subtree, not its ch
     assert.equal(world.requireObject(3).spatial, undefined)
     assert.equal(world.moveObject(3, 1), true)
     assert.deepEqual(world.objects.map((object) => object.editorId), [1, 2, 3])
+})
+
+test("adding authored object properties is one undoable command and survives save/open", () => {
+    const world = state([])
+    const props = { render: "nine", nine: "panel.json", slice: "Panel", width: 80, height: 40 }
+    const id = world.addObject(10, 20, props)
+    props.width = 1000
+    assert.equal(world.history.toArray().length, 1)
+    assert.equal(world.requireObject(id).props.width, 80)
+    const saved = world.toStorageData()
+    world.undo()
+    assert.equal(world.objects.length, 0)
+    assert.equal(world.activeObjectId, 0)
+    world.redo()
+    assert.equal(world.activeObjectId, id)
+    assert.equal(world.toStorageData(), saved)
+    const reopened = state(JSON.parse(saved))
+    assert.equal(reopened.toStorageData(), saved)
+})
+
+
+
+
+
+
+
+
+class ResizeRegistry extends Registry {
+    constructor(origin = [0, 0]) { super(); this.origin = origin }
+    canResize(object) { return ["nine", "rectangle", "sprite"].includes(object.props.render) }
+    resize(_object, { width, height }) { return { width, height } }
+    bounds(object) {
+        const width = Number(object.props.width || 40), height = Number(object.props.height || 20)
+        const minX = -width * this.origin[0], minY = -height * this.origin[1]
+        return { minX, minY, maxX: minX + width, maxY: minY + height }
+    }
+}
+function resizeView(data = [{ x: 10, y: 20, render: "nine", width: 40, height: 20 }], origin = [0, 0], invertX = false, invertY = false) {
+    const world = state(data)
+    world.selectObject(world.objects.at(-1).editorId)
+    const canvas = view(world, invertX, invertY)
+    Object.assign(canvas, {
+        rendererRegistry: new ResizeRegistry(origin), resizeDrag: null, resizeCleanup: null,
+        getWorldPoint(x, y) { return this.canvasToProjectPoint({ x, y }) },
+        focus() {}, setData() {}, renderSnapshot() {}, setStatus() {},
+        async prepareRenderers() {},
+    })
+    return { world, canvas }
+}
+function pressResize(canvas, edge) {
+    const object = canvas.snapshot.objects.find(object => object.editorId === canvas.snapshot.activeObjectId)
+    const handle = resize.resizeHandles(canvas.objectCanvasBounds(object)).find(handle => handle.edge === edge)
+    let prevented = false
+    canvas.onCanvasMouseDown({ button: 0, clientX: handle.x, clientY: handle.y, preventDefault() { prevented = true } })
+    assert.equal(prevented, true)
+    assert.equal(canvas.resizeDrag.edge, edge)
+    assert.equal(canvas.objectDrag, undefined)
+    return handle
+}
+function resizeMove(canvas, handle, dx, dy) {
+    canvas.onCanvasMouseMove({ clientX: handle.x + dx, clientY: handle.y + dy, buttons: 1 })
+}
+function resizeRelease(canvas, handle, dx, dy) {
+    canvas.onCanvasMouseUp({ button: 0, clientX: handle.x + dx, clientY: handle.y + dy })
+}
+
+test("resize previews without mutating world; release records one combined position/props command", () => {
+    const { world, canvas } = resizeView()
+    const original = world.toStorageData(), handle = pressResize(canvas, "nw")
+    resizeMove(canvas, handle, -10, -6)
+    resizeMove(canvas, handle, -20, -8)
+    assert.equal(world.toStorageData(), original)
+    assert.equal(world.dirty, false)
+    assert.equal(world.history.toArray().length, 0)
+    assert.deepEqual(canvas.snapshot.objects.map(o => [o.x, o.y, o.props.width, o.props.height]), [[-10, 12, 60, 28]])
+    resizeRelease(canvas, handle, -20, -8)
+    assert.equal(world.history.toArray().length, 1)
+    assert.equal(world.history.toArray()[0].command.label, "Resize object")
+    assert.deepEqual(world.objects.map(o => [o.x, o.y, o.props.width, o.props.height]), [[-10, 12, 60, 28]])
+    assert.equal(canvas.resizeDrag, null)
+    assert.equal(canvas.canvas.ownerDocument.listeners.size, 0)
+    const saved = world.toStorageData()
+    world.undo(); assert.equal(world.toStorageData(), original)
+    world.redo(); assert.equal(world.toStorageData(), saved)
+    assert.equal(state(JSON.parse(saved)).toStorageData(), saved)
+})
+
+for (const invertX of [false, true]) for (const invertY of [false, true]) {
+    test(`nested resize fixes opposite canvas edges with inversion ${invertX}/${invertY}`, () => {
+        for (const edge of ["nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
+            const data = [group("a", 100, 200), group("b", 20, 30, "a"), { x: 10, y: 20, spatial: { id: "panel", parent: "b" }, render: "nine", width: 40, height: 20 }]
+            const { world, canvas } = resizeView(data, [0.5, 1], invertX, invertY)
+            const before = canvas.objectCanvasBounds(world.objects[2]), handle = pressResize(canvas, edge)
+            resizeMove(canvas, handle, 12, -8)
+            const after = canvas.objectCanvasBounds(canvas.snapshot.objects[2])
+            assert.equal(edge.includes("w") ? after.maxX : after.minX, edge.includes("w") ? before.maxX : before.minX)
+            assert.equal(edge.includes("n") ? after.maxY : after.minY, edge.includes("n") ? before.maxY : before.minY)
+            resizeRelease(canvas, handle, 12, -8)
+            assert.deepEqual(world.objects.slice(0, 2).map(o => [o.x, o.y]), [[100, 200], [20, 30]])
+            assert.deepEqual(world.objects[2].spatial, { id: "panel", parent: "b" })
+            assert.equal(world.history.toArray().length, 1)
+        }
+    })
+}
+
+test("resize handles keep screen hit areas at zoom and outrank overlapping objects", () => {
+    const { world, canvas } = resizeView([{ x: 10, y: 20, render: "nine", width: 40, height: 20 }, { x: 45, y: 35 }])
+    world.selectObject(1); canvas.snapshot = world.snapshot()
+    canvas.scale = 4
+    assert.deepEqual(canvas.resizeScreenSize(6), { x: 3, y: 3 })
+    assert.equal(canvas.selectedResizeHandle({ x: 53, y: 43 }).edge, "se")
+    assert.equal(canvas.selectedResizeHandle({ x: 53.1, y: 43 }), null)
+    pressResize(canvas, "se")
+    assert.equal(canvas.resizeDrag.before.editorId, 1)
+    canvas.cancelResize()
+    world.objects[0].props.lock = true; canvas.snapshot = world.snapshot()
+    assert.equal(canvas.selectedResizeHandle({ x: 50, y: 40 }), null)
+    world.selectObject(2); canvas.snapshot = world.snapshot()
+    assert.equal(canvas.selectedResizeHandle({ x: 45, y: 35 }), null)
+})
+
+test("no-op resize and dragging away then back preserve natural-size props without history", () => {
+    for (const move of [false, true]) {
+        const { world, canvas } = resizeView([{ x: 10, y: 20, render: "sprite" }], [0.5, 0.5])
+        const before = world.toStorageData(), handle = pressResize(canvas, "se")
+        if (move) resizeMove(canvas, handle, 15, 9)
+        resizeMove(canvas, handle, 0.1, 0.1)
+        resizeRelease(canvas, handle, 0, 0)
+        assert.equal(world.toStorageData(), before)
+        assert.equal(world.history.toArray().length, 0)
+        assert.equal(world.dirty, false)
+    }
+})
+
+test("Escape, window blur, lost button and explicit cancellation discard preview and listeners", () => {
+    for (const cause of ["Escape", "blur", "lost-button", "explicit"]) {
+        const { world, canvas } = resizeView()
+        const before = world.toStorageData(), handle = pressResize(canvas, "nw")
+        resizeMove(canvas, handle, -12, -8)
+        const doc = canvas.canvas.ownerDocument
+        if (cause === "Escape") {
+            let prevented = false, stopped = false
+            doc.listeners.get("keydown")({ key: "Escape", preventDefault() { prevented = true }, stopPropagation() { stopped = true } })
+            assert(prevented && stopped)
+        } else if (cause === "blur") doc.defaultView.listeners.get("blur")()
+        else if (cause === "lost-button") canvas.onCanvasMouseMove({ buttons: 0, clientX: 100, clientY: 100 })
+        else canvas.cancelResize()
+        assert.equal(canvas.resizeDrag, null)
+        assert.equal(world.toStorageData(), before)
+        assert.equal(JSON.stringify(canvas.snapshot.objects), JSON.stringify(world.objects))
+        assert.equal(world.history.toArray().length, 0)
+        assert.equal(world.dirty, false)
+        assert.equal(doc.listeners.size, 0)
+        assert.equal(doc.defaultView.listeners.size, 0)
+    }
+})
+
+test("outside-canvas drag/release completes resize; space does not start viewport panning", () => {
+    const { world, canvas } = resizeView()
+    const handle = pressResize(canvas, "se"), doc = canvas.canvas.ownerDocument
+    let prevented = false
+    doc.listeners.get("keydown")({ key: " ", preventDefault() { prevented = true }, stopPropagation() {} })
+    assert(prevented)
+    canvas.onCanvasMouseLeave({ buttons: 1 })
+    assert(canvas.resizeDrag)
+    doc.listeners.get("mousemove")({ target: {}, clientX: handle.x + 8, clientY: handle.y + 6, buttons: 1 })
+    doc.listeners.get("mouseup")({ target: {}, button: 0, clientX: handle.x + 10, clientY: handle.y + 8 })
+    assert.equal(world.objects[0].props.width, 50)
+    assert.equal(world.objects[0].props.height, 28)
+    assert.equal(world.history.toArray().length, 1)
+    assert.equal(doc.listeners.size, 0)
+})
+
+test("side handles clamp to one pixel, preserve other axis, and rounded origins keep positions integral", () => {
+    const { world, canvas } = resizeView(undefined, [0.5, 0.5])
+    const before = canvas.objectCanvasBounds(world.objects[0]), handle = pressResize(canvas, "w")
+    resizeMove(canvas, handle, 1000, 1000)
+    const obj = canvas.snapshot.objects[0], after = canvas.objectCanvasBounds(obj)
+    assert.equal(obj.props.width, 1)
+    assert.equal(obj.props.height, 20)
+    assert(Number.isInteger(obj.x) && Number.isInteger(obj.y))
+    assert(Math.abs(before.maxX - after.maxX) <= 0.5)
+    assert.equal(before.minY, after.minY)
+    resizeRelease(canvas, handle, 1000, 1000)
+    assert.equal(world.objects[0].props.width, 1)
+})
+
+test("geometry command rejects spatial groups, reserved props and non-integer coordinates", () => {
+    const world = state([group("a", 0, 0), { x: 10, y: 20, width: 40, height: 20 }])
+    for (const action of [
+        () => world.resizeObject(1, 0, 0, {}),
+        () => world.resizeObject(2, 0.5, 0, { width: 10 }),
+        () => world.resizeObject(2, 0, 0, { x: 10 }),
+        () => world.resizeObject(2, 0, 0, { spatial: {} }),
+        () => world.resizeObject(2, 0, 0, { group: "other" }),
+    ]) assert.throws(action)
+    assert.equal(world.history.toArray().length, 0)
+})
+
+test("selection draws eight screen-sized handles only for enabled leaf renderers", () => {
+    const { world, canvas } = resizeView()
+    const squares = []
+    const ctx = { save() {}, restore() {}, strokeRect() {}, beginPath() {}, arc() {}, fill() {}, stroke() {}, fillRect(...args) { squares.push(args) } }
+    canvas.drawSelection(ctx, world.objects[0])
+    assert.equal(squares.length, 8)
+    const rect = canvas.canvas.getBoundingClientRect()
+    for (const [, , width, height] of squares) {
+        assert.equal(width * canvas.scale * rect.width / canvas.canvas.width, 7)
+        assert.equal(height * canvas.scale * rect.height / canvas.canvas.height, 7)
+    }
+    squares.length = 0
+    canvas.drawSelection(ctx, world.objects[0], false)
+    assert.equal(squares.length, 0)
+    world.objects[0].props.lock = true
+    canvas.drawSelection(ctx, world.objects[0])
+    assert.equal(squares.length, 0)
+    const groups = resizeView([group("a", 0, 0)])
+    groups.canvas.drawSelection(ctx, groups.world.objects[0])
+    assert.equal(squares.length, 0)
+})
+
+test("refresh and unmount discard previews and detach document/window listeners", async () => {
+    for (const action of ["refresh", "disconnect"]) {
+        const { world, canvas } = resizeView()
+        const before = world.toStorageData(), handle = pressResize(canvas, "se"), doc = canvas.canvas.ownerDocument
+        resizeMove(canvas, handle, 20, 20)
+        if (action === "refresh") await canvas.refreshSnapshot("External state update")
+        else {
+            canvas.rendererRegistry.dispose = () => {}
+            canvas.disconnectedCallback()
+            assert.equal(canvas.rendererRegistry, null)
+        }
+        assert.equal(canvas.resizeDrag, null)
+        assert.equal(doc.listeners.size, 0)
+        assert.equal(doc.defaultView.listeners.size, 0)
+        assert.equal(world.toStorageData(), before)
+        assert.equal(world.history.toArray().length, 0)
+    }
+})
+
+test("invalid renderer resize patches fail loudly and discard gesture state", () => {
+    for (const patch of [{ x: 1 }, { spatial: {} }, { width: NaN }, { width: 1 }, Promise.resolve({ width: 50 })]) {
+        const { world, canvas } = resizeView()
+        const before = world.toStorageData(), handle = pressResize(canvas, "se")
+        canvas.rendererRegistry.resize = () => patch
+        assert.throws(() => resizeMove(canvas, handle, 10, 5))
+        assert.equal(canvas.resizeDrag, null)
+        assert.equal(canvas.canvas.ownerDocument.listeners.size, 0)
+        assert.equal(world.toStorageData(), before)
+        assert.equal(world.history.toArray().length, 0)
+    }
+})
+
+for (const edge of ["nw", "n", "ne", "e", "se", "s", "sw", "w"]) {
+    test(`${edge} handles obey renderer minima without moving the opposite edge`, () => {
+        const { world, canvas } = resizeView()
+        canvas.rendererRegistry.resizeLimits = () => ({ minWidth: 18, minHeight: 12 })
+        const before = canvas.objectCanvasBounds(world.objects[0]), handle = pressResize(canvas, edge)
+        const dx = edge.includes("w") ? 1000 : edge.includes("e") ? -1000 : 0
+        const dy = edge.includes("n") ? 1000 : edge.includes("s") ? -1000 : 0
+        resizeMove(canvas, handle, dx, dy)
+        const preview = canvas.snapshot.objects[0], bounds = canvas.objectCanvasBounds(preview)
+        assert.equal(preview.props.width, /[we]/.test(edge) ? 18 : 40)
+        assert.equal(preview.props.height, /[ns]/.test(edge) ? 12 : 20)
+        assert.equal(edge.includes("w") ? bounds.maxX : bounds.minX, edge.includes("w") ? before.maxX : before.minX)
+        assert.equal(edge.includes("n") ? bounds.maxY : bounds.minY, edge.includes("n") ? before.maxY : before.minY)
+        resizeRelease(canvas, handle, dx, dy)
+        assert.equal(world.history.toArray().length, 1)
+        world.undo(); assert.equal(world.objects[0].props.width, 40)
+        world.redo(); assert.equal(world.objects[0].props.width, /[we]/.test(edge) ? 18 : 40)
+    })
+}
+
+
+test("property editing checks renderer minimum before committing and restores caches on rejection", async () => {
+    const { world, canvas } = resizeView()
+    canvas.setBusy = busy => { canvas.busy = busy }
+    const original = world.toStorageData(), preparations = [], calls = []
+    host.call = async (method, props) => {
+        calls.push([method, props])
+        return { ok: method === "ui.popup.open" ? { data: { render: "nine", width: 1, height: 1 } } : null }
+    }
+    canvas.rendererRegistry.prepare = async objects => {
+        preparations.push(structuredClone(objects))
+        if (objects[0].props.width < 18 || objects[0].props.height < 12) throw new Error("Slice minimum is 18 × 12")
+    }
+    await canvas.edit()
+    assert.equal(world.toStorageData(), original)
+    assert.equal(world.history.toArray().length, 0)
+    assert.equal(preparations.length, 2)
+    assert.equal(preparations[0][0].props.width, 1)
+    assert.equal(preparations[1][0].props.width, 40)
+    assert(calls.some(([method, props]) => method === "ui.toast.error" && props.message === "Slice minimum is 18 × 12"))
+    assert.equal(canvas.busy, false)
+    host.call = async () => ({ ok: { data: { render: "nine", width: 18, height: 12 } } })
+    await canvas.edit()
+    assert.equal(world.objects[0].props.width, 18)
+    assert.equal(world.history.toArray().length, 1)
+})
+
+function rendererPanelView() {
+    const world = state([]), canvas = view(world)
+    Object.assign(canvas, {
+        busy: false, rendererPreparationKey: "",
+        setBusy(busy) { this.busy = busy; this.renderRendererPanels(this.snapshot) },
+        setData() {}, renderSnapshot() {}, setStatus() {},
+    })
+    canvas.rendererRegistry.prepare = async () => {}
+    return { world, canvas }
+}
+
+test("generic renderer object creation validates before mutation, places at center and records one undo step", async () => {
+    const { world, canvas } = rendererPanelView(), calls = []
+    const properties = { kind: "custom", width: 70, height: 50 }
+    canvas.rendererRegistry.prepare = async objects => {
+        calls.push(objects)
+        if (calls.length === 1) assert.equal(world.objects.length, 0)
+    }
+    const id = await canvas.addRendererObject(properties, canvas.rendererGeneration)
+    properties.width = 999
+    assert.deepEqual(world.objects.map(o => [o.editorId, o.x, o.y, o.props]), [[id, 200, 150, { kind: "custom", width: 70, height: 50 }]])
+    assert.equal(world.activeObjectId, id)
+    assert.equal(world.history.toArray().length, 1)
+    assert.equal(canvas.busy, false)
+    world.undo(); assert.equal(world.objects.length, 0)
+    world.redo(); assert.equal(world.objects[0].props.width, 70)
+})
+
+test("generic add rejects invalid, unloaded, busy or obsolete requests without allocating state", async () => {
+    const { world, canvas } = rendererPanelView()
+    const id = world.nextObjectId
+    await assert.rejects(canvas.addRendererObject({ x: 3 }, 1), /reserved/)
+    canvas.busy = true
+    await assert.rejects(canvas.addRendererObject({}, 1), /Create or open/)
+    canvas.busy = false; world.loaded = false
+    await assert.rejects(canvas.addRendererObject({}, 1), /Create or open/)
+    world.loaded = true
+    await assert.rejects(canvas.addRendererObject({}, 0), /no longer active/)
+    const failure = new Error("Invalid renderer object")
+    canvas.rendererRegistry.prepare = async () => { throw failure }
+    await assert.rejects(canvas.addRendererObject({}, 1), error => error === failure)
+    assert.equal(world.nextObjectId, id)
+    assert.equal(world.objects.length, 0)
+    assert.equal(world.history.toArray().length, 0)
+    assert.equal(canvas.busy, false)
+})
+
+test("disconnect during renderer object preparation prevents stale creation", async () => {
+    const { world, canvas } = rendererPanelView()
+    let resolve
+    canvas.rendererRegistry.prepare = () => new Promise(done => { resolve = done })
+    const request = canvas.addRendererObject({ kind: "custom" }, 1)
+    assert.equal(canvas.busy, true)
+    canvas.rendererGeneration++
+    canvas.isConnected = false
+    resolve()
+    await assert.rejects(request, /no longer active/)
+    assert.equal(world.objects.length, 0)
+    assert.equal(world.history.toArray().length, 0)
+})
+
+test("World mounts and disables generic fieldsets, then disposes/removes each panel", () => {
+    const { canvas } = rendererPanelView(), element = new PanelElement(), calls = []
+    const anchor = { before(panel) { calls.push("mount"); panel.parentNode = this } }
+    canvas.historyElement = { closest: tag => { assert.equal(tag, "fieldset"); return anchor } }
+    canvas.rendererRegistry.createSidebarPanels = context => {
+        assert.equal(typeof context.addObject, "function")
+        return [{ element, dispose() { calls.push("dispose") } }]
+    }
+    canvas.mountRendererPanels(1)
+    assert.equal(element.parentNode, anchor)
+    assert.equal(element.disabled, false)
+    canvas.busy = true; canvas.renderRendererPanels(canvas.snapshot)
+    assert.equal(element.disabled, true)
+    canvas.busy = false; canvas.renderRendererPanels({ loaded: false })
+    assert.equal(element.disabled, true)
+    assert.throws(() => canvas.mountRendererPanels(1), /already mounted/)
+    canvas.disposeRendererPanels()
+    assert.deepEqual(calls, ["mount", "dispose"])
+    assert.equal(element.removed, true)
+    assert.deepEqual(canvas.rendererPanels, [])
+})
+
+test("World rejects invalid panel elements and cleans partially created controllers", () => {
+    for (const element of [null, {}, Object.assign(new PanelElement(), { parentNode: {} })]) {
+        const { canvas } = rendererPanelView(), calls = []
+        canvas.rendererRegistry.createSidebarPanels = () => [{ element, dispose() { calls.push("dispose") } }]
+        assert.throws(() => canvas.mountRendererPanels(1), /detached fieldset/)
+        assert.deepEqual(calls, ["dispose"])
+        assert.deepEqual(canvas.rendererPanels, [])
+    }
+})
+
+test("World contains no renderer-specific sidebar imports or names", () => {
+    assert.doesNotMatch(source, /nine|gams\.nine|import-nine|nine-slice|readNineDocument|renderers\.nine/i)
+})
+
+function initializationView() {
+    const { world, canvas } = rendererPanelView()
+    world.addObject(5, 6, { kind: "custom", width: 20, height: 10 })
+    canvas.snapshot = world.snapshot()
+    canvas.initializingRenderers = true
+    canvas.viewConfig = { config: { renderers: {} } }
+    canvas.historyElement = { closest: () => ({ before(element) { element.parentNode = this } }) }
+    canvas.bootstrap = async () => { throw new Error("Reconnect must preserve loaded state") }
+    return { world, canvas }
+}
+function lifecycleRegistry(calls, name) {
+    const registry = new Registry()
+    registry.prepare = async objects => { calls.push([name, "prepare", objects.length]) }
+    registry.createSidebarPanels = () => [{ element: new PanelElement(), dispose() { calls.push([name, "panel-dispose"]) } }]
+    registry.dispose = () => { calls.push([name, "dispose"]) }
+    return registry
+}
+
+test("renderer/panel reconnect recreates controls once while preserving unsaved state and history", async () => {
+    const { world, canvas } = initializationView(), calls = [], before = world.toStorageData(), history = world.history
+    const previousFactory = Registry.create
+    let count = 0
+    Registry.create = async () => lifecycleRegistry(calls, ++count)
+    try {
+        await canvas.initializeRenderers()
+        const first = canvas.rendererPanels[0]
+        assert.equal(canvas.rendererPanels.length, 1)
+        assert.equal(canvas.initializingRenderers, false)
+        canvas.disconnectedCallback()
+        assert.equal(first.element.removed, true)
+        assert.equal(canvas.rendererPanels.length, 0)
+        assert.equal(canvas.dataset.ready, undefined)
+        assert.equal(canvas.initializingRenderers, true)
+        await canvas.initializeRenderers()
+        assert.equal(canvas.rendererPanels.length, 1)
+        assert.notEqual(canvas.rendererPanels[0], first)
+        assert.equal(world.toStorageData(), before)
+        assert.equal(world.history, history)
+        assert.equal(world.dirty, true)
+        assert.equal(world.history.toArray().length, 1)
+        assert.equal(calls.filter(call => call[1] === "panel-dispose").length, 1)
+        assert.equal(calls.filter(call => call[1] === "dispose").length, 1)
+    } finally { Registry.create = previousFactory }
+})
+
+test("late renderer factory after disconnect cannot mount panels into a newer connection", async () => {
+    const { canvas } = initializationView(), calls = [], previousFactory = Registry.create
+    let resolve
+    Registry.create = () => new Promise(done => { resolve = done })
+    try {
+        const old = canvas.initializeRenderers()
+        canvas.rendererRegistry.dispose = () => {}
+        canvas.disconnectedCallback()
+        Registry.create = async () => lifecycleRegistry(calls, "current")
+        await canvas.initializeRenderers()
+        const current = canvas.rendererRegistry, panels = canvas.rendererPanels
+        resolve(lifecycleRegistry(calls, "obsolete"))
+        await old
+        assert.equal(canvas.rendererRegistry, current)
+        assert.equal(canvas.rendererPanels, panels)
+        assert.deepEqual(calls.filter(call => call[0] === "obsolete"), [["obsolete", "dispose"]])
+    } finally { Registry.create = previousFactory }
+})
+
+test("stale preparation failure on disconnect cannot replace the current registry or panels", async () => {
+    const { canvas } = initializationView(), calls = [], previousFactory = Registry.create
+    const oldRegistry = lifecycleRegistry(calls, "old")
+    let reject, started
+    const waiting = new Promise(resolve => { started = resolve })
+    oldRegistry.prepare = () => { started(); return new Promise((_resolve, fail) => { reject = fail }) }
+    Registry.create = async () => oldRegistry
+    try {
+        const old = canvas.initializeRenderers()
+        await waiting
+        canvas.disconnectedCallback()
+        Registry.create = async () => lifecycleRegistry(calls, "new")
+        await canvas.initializeRenderers()
+        const current = canvas.rendererRegistry, panels = canvas.rendererPanels
+        reject(new Error("Preparation superseded by disposal"))
+        await old
+        assert.equal(canvas.rendererRegistry, current)
+        assert.equal(canvas.rendererPanels, panels)
+        assert.equal(canvas.initializingRenderers, false)
+        assert.equal(calls.filter(call => call[0] === "old" && call[1] === "dispose").length, 1)
+    } finally { Registry.create = previousFactory }
 })

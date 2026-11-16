@@ -19,6 +19,13 @@ function validateRendererInstance(id, renderer) {
       `world object renderer ${id} must implement ${method}()`,
     )
   }
+  for (const method of ["resize", "resizeLimits", "createSidebarPanel"]) {
+    if (!(method in renderer)) continue
+    assert(
+      typeof renderer[method] === "function",
+      `world object renderer ${id} ${method} must be a function`,
+    )
+  }
   return renderer
 }
 
@@ -186,6 +193,71 @@ export class WorldObjectRendererRegistry {
   bounds(object) {
     const { id, renderer } = this.rendererForObject(object)
     return validateBounds(id, renderer.bounds(object))
+  }
+
+  canResize(object) {
+    const { renderer } = this.rendererForObject(object)
+    return typeof renderer.resize === "function"
+  }
+
+  resizeLimits(object) {
+    const { id, renderer } = this.rendererForObject(object)
+    if (typeof renderer.resizeLimits !== "function") return { minWidth: 1, minHeight: 1 }
+    const limits = renderer.resizeLimits(object)
+    assert(isPlainObject(limits), `world object renderer ${id} resize limits must be an object`)
+    for (const field of ["minWidth", "minHeight"]) {
+      assert(Number.isFinite(limits[field]) && limits[field] > 0,
+        `world object renderer ${id} resize limits ${field} must be a positive finite number`)
+    }
+    return { minWidth: limits.minWidth, minHeight: limits.minHeight }
+  }
+
+  resize(object, size) {
+    const { id, renderer } = this.rendererForObject(object)
+    assert(
+      typeof renderer.resize === "function",
+      `world object renderer ${id} does not support resize`,
+    )
+    for (const field of ["width", "height"]) {
+      assert(
+        size && Number.isFinite(size[field]) && size[field] > 0,
+        `world renderer resize ${field} must be a positive finite number`,
+      )
+    }
+    const limits = this.resizeLimits(object)
+    assert(size.width >= limits.minWidth && size.height >= limits.minHeight,
+      `world object renderer ${id} resize minimum is ${limits.minWidth} × ${limits.minHeight}`)
+    const patch = renderer.resize(object, size)
+    assert(
+      isPlainObject(patch) &&
+        (Object.getPrototypeOf(patch) === Object.prototype ||
+          Object.getPrototypeOf(patch) === null),
+      `world object renderer ${id} resize must return a plain property patch`,
+    )
+    return patch
+  }
+
+  createSidebarPanels({ addObject }) {
+    assert(typeof addObject === "function", "world renderer panels require addObject()")
+    const panels = []
+    try {
+      for (const record of this.records) {
+        if (typeof record.renderer.createSidebarPanel !== "function") continue
+        const panel = record.renderer.createSidebarPanel({
+          addObject: properties => {
+            assert(isPlainObject(properties), "world renderer panel object properties must be an object")
+            return addObject({ ...properties, ...Object.fromEntries(record.matcher) })
+          },
+        })
+        assert(isPlainObject(panel) && typeof panel.dispose === "function",
+          `world object renderer ${record.id} sidebar panel must provide element and dispose()`)
+        panels.push(panel)
+      }
+      return panels
+    } catch (error) {
+      for (const panel of panels) panel.dispose()
+      throw error
+    }
   }
 
   dispose() {

@@ -23,7 +23,7 @@ use pinned released Views.
 | `make build` | Assemble the View and renderer registry into `build.nosync/views/view-world.js`. |
 | `make open` | Build and open the local Project in the released Host with explicit `GAMS_APP_CWD` and `GAMS_CONFIG`. |
 | `make check` | Check canonical and assembled JavaScript syntax without dependencies. |
-| `make test` | Run native renderer, registry and spatial-group tests. |
+| `make test` | Run native renderer, import, registry and spatial-group tests. |
 | `make package` | Build `view.world.zip` and `SHA256SUMS` under `build.nosync/`. |
 | `make serve-docs DOCS_PORT=8080` | Preview this wiki with pinned justgook/wiki v1.4.0. |
 | `make validate-docs` | Validate wiki content. |
@@ -151,7 +151,7 @@ into the controller. Options:
 
 ## Renderer configuration
 
-The ZIP contains `views/view-world.js` (including the registry) and three separate
+The ZIP contains `views/view-world.js` (including the registry) and four separate
 browser modules under `world-renderers/`. They are not WASM plugins or a separate
 Project Unit category. Projects explicitly select modules in
 `ui.views.view-world.config.renderers`; there is no automatic discovery.
@@ -192,9 +192,10 @@ The View exposes those authored properties as `object.props` to renderers.
 | --- | --- | --- |
 | `rectangle.js` / `render: "rectangle"` | Positive `width`, `height`; CSS `color`. | None. |
 | `sprite.js` / `render: "sprite"` | `url` for a Project image, or `width`, `height`, `color` for a rectangle. | Paired `width`/`height` override natural image size. QOI, PNG, JPEG, WebP, GIF and BMP are supported. |
+| `nine.js` / `render: "nine"` | `nine`: Project-relative JSON path; `slice`: exact slice name; positive `width`, `height`. | None. |
 | `tilemap.js` / `render: "tilemap"` | `tilemap`: Project-relative tilemap path. | Positive one-based `layer`; `repeat: [x, y]` with 0/1 flags for infinite viewport repetition. |
 
-All three accept `config.origin: [x, y]`, normalized from 0 to 1; omission means
+All four accept `config.origin: [x, y]`, normalized from 0 to 1; omission means
 top-left `[0, 0]`. The local Project uses top-left rectangles, centered sprites
 and bottom-left tilemaps. Repeated tilemaps retain one copy's finite bounds for
 selection and fit-to-content.
@@ -212,3 +213,179 @@ Custom property inputs belong in `config.inputs`; axis inversion belongs in
 Native tests cover renderer/registry behavior, spatial state commands, history
 command effects and canvas geometry/interactions. Native Host GUI gestures and
 full configured plugin integration remain separate checks.
+
+## Nine-slice objects
+
+The local Project enables `world-renderers/nine.js`, matching `render: "nine"`.
+A consumer enables it through the same renderer configuration/archive-entry
+contract as the other modules. This renderer supplies its own **Nine slice**
+sidebar panel. The configuration key may have any name; World discovers optional
+panels by renderer capability, not by ID. Without this renderer, its panel and
+slice-specific workflow are absent.
+
+1. Create or open a world.
+2. Choose **Import nine-slice JSON** in the **Nine slice** panel and select a
+   `gams.nine` version-1 document from the Project.
+3. Choose a named slice. Width and Height initially use its source bounds;
+   selecting another slice resets both values.
+4. Set positive integer Width/Height and click **Add slice object**.
+
+The object is added at the viewport center as one undoable command. The atlas and
+slice are checked before adding anything; an invalid document, missing slice or
+unreadable image reports an error without adding an object. The imported source
+remains available for adding several differently sized objects. Use the existing
+Properties action on a selected object to change `nine`, `slice`, `width` or
+`height`; normal move, spatial parenting, reorder, delete and Undo/Redo apply.
+
+A stored object looks like:
+
+```json
+{
+  "x": 100,
+  "y": 50,
+  "render": "nine",
+  "nine": "ui/panels.nine.json",
+  "slice": "Window",
+  "width": 240,
+  "height": 120
+}
+```
+
+Import does not upload or copy the document/atlas. Both must be accessible in the
+Project; the document's `image` path is Project-relative, regardless of the JSON
+file's directory. Save/Open retains the JSON path, exact slice name and target
+size. Keep both input files with the Project. Documents/images are cached while
+used; reopen the Project after editing those source files externally.
+
+The renderer reads the format produced by view.nine: `format: "gams.nine"`,
+`version: 1`, `image` and named `slices` with pixel `bounds` and bounds-relative
+stretch `center`. It supports `nine`, `horizontal`, `vertical` and `region` slices.
+PNG, JPEG and WebP atlas images are supported. Duplicate names, malformed pixel
+rectangles, invalid centers, unknown slice types and out-of-atlas bounds fail.
+
+Nine-slices retain fixed-size corners while stretching edges and center. Each
+slice provides `minWidth`/`minHeight` from its fixed borders; border sizes never
+shrink to fit. The limits are derived from the existing slice geometry, not
+additional authored JSON fields:
+
+| Slice type | Minimum width | Minimum height |
+| --- | --- | --- |
+| `nine` | `max(1, bounds.width - center.width)` | `max(1, bounds.height - center.height)` |
+| `horizontal` | `max(1, bounds.width - center.width)` | `bounds.height` |
+| `vertical` | `bounds.width` | `max(1, bounds.height - center.height)` |
+| `region` | 1 | 1 |
+
+At the exact fixed-border minimum, the stretch center on that axis is omitted.
+The import form exposes these minima, handles stop at them, and undersized sizes
+from files or numeric edits are rejected. Invalid property edits leave the world
+unchanged. The pause example's `menu-border` has minimum dimensions **641 × 622**.
+
+Horizontal/vertical slices stretch their active axis in three parts. Their other
+axis scales as one region but cannot shrink below the source dimension. A plain
+region scales its entire bounds. Drawing uses nearest-neighbor sampling; no tiling
+mode is added. Renderer `config.origin` controls destination bounds as for sprites.
+
+## Resize objects
+
+Select an unlocked nine-slice, rectangle or sprite to show eight canvas handles.
+Drag an edge to resize one dimension or a corner to resize both. Handles keep a
+constant screen size at different zoom levels and take priority over object
+movement. Ordinary interior dragging still moves the object. Spatial groups,
+points and tilemaps have no resize handles.
+
+The opposite edge/corner stays anchored while the dragged edge moves. The editor
+updates position as needed for the renderer origin and parent-relative coordinates;
+axis inversion is supported. Pointer deltas snap to world pixels and changed
+dimensions clamp to the renderer
+minimum without flipping (one pixel when no limits are supplied). World positions remain
+integers: for fractional renderer origins, position rounding can shift the anchored
+edge by at most half a world pixel. Top-left origins have no such shift.
+
+Resizing previews without changing saved state. Releasing the primary button
+commits position and renderer properties together in one **Resize object** undo
+command. No-op gestures add no history. Escape, window focus loss, lost mouse
+button, disconnect or an external state refresh discards the preview. Dragging
+and releasing outside the canvas still completes the gesture. The viewport does
+not pan with Space during a resize. Existing Properties editing provides the
+keyboard alternative for width/height; the position inspector adjusts X/Y.
+
+Nine-slice resizing changes its destination dimensions while retaining fixed
+corners, stopping when they occupy the entire destination. It does not scale the entire atlas. A sprite initially using
+natural image size gains explicit width/height when resized. Aspect-ratio locking,
+mirroring and spatial-group scaling are not part of this interaction.
+
+### Renderer resize contract
+
+A renderer opts in by providing a synchronous method:
+
+```js
+resize(object, { width, height }) {
+  return { width, height }
+}
+```
+
+The requested width and height are positive finite numbers in object-local canvas
+units. Return a plain JSON property patch without mutating the object or size
+argument. The View merges the patch into the original properties and verifies
+that `bounds()` now has the requested dimensions. Bounds may have nonzero origin
+offsets; the View owns the corresponding position adjustment. Resizing must work
+synchronously with already prepared resources: do not change the renderer match,
+source paths, organizational group or spatial metadata. A missing method means
+no resize support; a present non-function method or malformed patch is an error.
+
+A renderer may also implement synchronous `resizeLimits(object)`, returning
+`{ minWidth, minHeight }` for that particular object. Both values must be positive
+finite numbers. Omission means `{ minWidth: 1, minHeight: 1 }`. The View clamps the
+requested dimensions before calculating the anchored position or calling
+`resize()`. The nine-slice renderer uses the selected slice's fixed-border minima;
+`nineSliceLimits(slice)` exposes the same calculation for the renderer-owned
+import controls.
+
+`WorldObjectRendererRegistry.canResize(object)` reports support for the actually
+matched renderer; `resizeLimits(object)` validates its limits, and `resize(object,
+size)` rejects below-minimum requests before dispatching its patch.
+The View owns handles, hit testing, pixel snapping, anchoring, preview/cancellation
+and history. Renderers own which properties represent their dimensions.
+
+## Renderer sidebar panels
+
+Configured renderers can optionally provide a synchronous factory:
+
+```js
+createSidebarPanel({ addObject }) {
+  const element = document.createElement("fieldset")
+  // Add a legend and controls using the documented View UI vocabulary.
+  return {
+    element,
+    dispose() {
+      // Remove listeners and invalidate pending panel operations.
+    }
+  }
+}
+```
+
+Return a detached `fieldset` and a `dispose()` function. The renderer owns its
+markup, event handlers, transient panel state, resource selection and validation.
+Use the existing popup/tooltip/toast services and Host semantic styling; no
+View-local CSS or standalone popups. Factories without panels are simply omitted;
+a malformed optional factory or result is an error. The internal point fallback
+does not contribute a panel.
+
+World mounts these fieldsets before History and disables each root while busy or
+without an open world. A panel must independently disable controls while its own
+operation is pending or required input is absent. World disposes/removes panels
+before disposing renderers on disconnect, and recreates them on reconnect without
+reopening the world or losing unsaved edits/history. Transient panel imports reset.
+A disposed panel must ignore late chooser/read/add results and not show new toasts.
+
+`await addObject(properties)` is the only supplied editing callback. World applies
+the renderer's configured `match` properties, validates/prepares the candidate,
+places it at the viewport center, selects it and records one undo command. It
+returns the editor object ID. Invalid candidates add no object or history; stale
+callbacks after disconnect are rejected. The panel handles action errors through
+UI Services and must not directly mutate World state.
+
+The registry's `createSidebarPanels({ addObject })` discovers these optional
+capabilities and binds the configured match properties. World contains no slice
+parser, renderer-specific control markup, source-field names or special renderer
+ID checks.

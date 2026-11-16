@@ -128,3 +128,49 @@ test("registry routes drawing/bounds to the selected renderer and propagates pre
   box.prepare = async () => { throw failure }
   await assert.rejects(registry.prepare([item]), error => error === failure)
 })
+
+test("only configured renderer capabilities provide sidebar panels, independent of renderer ID", async () => {
+  const supported = renderer(), fallback = renderer(), seen = [], created = []
+  supported.createSidebarPanel = function(context) { assert.equal(this, supported); seen.push(context); return { element: {}, dispose() {} } }
+  fallback.createSidebarPanel = () => { throw new Error("Internal fallback must not contribute UI") }
+  const f = fixture({ "renderers/box.js": { createWorldObjectRenderer: () => supported } })
+  const registry = await f.Registry.create({ renderers: { arbitraryName: descriptor({ kind: "panel", mode: "pause" }) } }, fallback)
+  const addObject = properties => { created.push(properties); return Promise.resolve(42) }
+  const panels = registry.createSidebarPanels({ addObject })
+  assert.equal(panels.length, 1)
+  assert.equal(await seen[0].addObject({ width: 80, kind: "wrong" }), 42)
+  assert.deepEqual(created, [{ width: 80, kind: "panel", mode: "pause" }])
+  assert.throws(() => seen[0].addObject(null), /properties must be an object/)
+  const empty = await f.Registry.create({ renderers: {} }, fallback)
+  assert.deepEqual(empty.createSidebarPanels({ addObject }), [])
+  assert.throws(() => empty.createSidebarPanels({}), /require addObject/)
+})
+
+test("sidebar panel factories are optional but malformed capabilities fail loudly", async () => {
+  const box = renderer(), f = fixture({ "renderers/box.js": { createWorldObjectRenderer: () => box } })
+  const config = { renderers: { custom: descriptor() } }
+  let registry = await f.Registry.create(config, renderer())
+  assert.deepEqual(registry.createSidebarPanels({ addObject() {} }), [])
+  for (const method of [undefined, null, false, 1, {}]) {
+    box.createSidebarPanel = method
+    await assert.rejects(f.Registry.create(config, renderer()), /createSidebarPanel must be a function/)
+  }
+  for (const result of [null, [], {}, { element: {} }, { element: {}, dispose: false }, Promise.resolve({})]) {
+    box.createSidebarPanel = () => result
+    registry = await f.Registry.create(config, renderer())
+    assert.throws(() => registry.createSidebarPanels({ addObject() {} }), /sidebar panel/)
+  }
+})
+
+test("failed sidebar factory disposes already created panels", async () => {
+  const box = renderer(), bad = renderer(), calls = [], failure = new Error("Panel factory failed")
+  box.createSidebarPanel = () => ({ element: {}, dispose() { calls.push("dispose") } })
+  bad.createSidebarPanel = () => { throw failure }
+  const f = fixture({
+    "renderers/box.js": { createWorldObjectRenderer: () => box },
+    "renderers/bad.js": { createWorldObjectRenderer: () => bad },
+  })
+  const registry = await f.Registry.create({ renderers: { a: descriptor(), b: { ...descriptor({ kind: "bad" }), url: "renderers/bad.js" } } }, renderer())
+  assert.throws(() => registry.createSidebarPanels({ addObject() {} }), error => error === failure)
+  assert.deepEqual(calls, ["dispose"])
+})
