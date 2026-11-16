@@ -6,7 +6,8 @@ const source = await readFile(new URL("../src/world-renderers/nine.js", import.m
 // Adapt only the panel's DOM operations and Host boundary; run the real module.
 class Element {
   constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.attributes = {}; this.listeners = new Map(); this.disabled = false; this.value = ""; this.textContent = "" }
-  setAttribute(name, value) { this.attributes[name] = value; if (["value", "min"].includes(name)) this[name] = value }
+  setAttribute(name, value) { this.attributes[name] = value; if (["value", "min", "max"].includes(name)) this[name] = value }
+  removeAttribute(name) { delete this.attributes[name]; if (["min", "max"].includes(name)) this[name] = "" }
   append(...children) { this.children.push(...children) }
   replaceChildren(...children) { this.children = children }
   addEventListener(type, listener) { this.listeners.set(type, listener) }
@@ -19,6 +20,8 @@ const data = {
   slices: [
     { name: "panel <safe>", type: "nine", bounds: { x: 0, y: 0, width: 12, height: 10 }, center: { x: 2, y: 3, width: 6, height: 2 } },
     { name: "bar", type: "horizontal", bounds: { x: 12, y: 0, width: 20, height: 4 }, center: { x: 3, y: 0, width: 10, height: 4 } },
+    { name: "column", type: "vertical", bounds: { x: 0, y: 10, width: 5, height: 20 }, center: { x: 0, y: 3, width: 5, height: 10 } },
+    { name: "icon", type: "region", bounds: { x: 5, y: 10, width: 8, height: 7 } },
   ],
 }
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
@@ -66,15 +69,59 @@ test("chooser/local reader, safe names, dimensions/minima and exact injected obj
   assert.deepEqual(f.calls[0], ["ui.popup.open", { title: "Import Nine-slice JSON", size: "medium", tag: "view-files", props: { mode: "chooser", filter: "*.json" } }])
   assert.deepEqual(f.reads, [["fs/fs::read-text", "panels/ui.json"]])
   assert.equal(f.path.textContent, "panels/ui.json")
-  assert.deepEqual(f.select.children.map(o => o.textContent), ["panel <safe>", "bar"])
+  assert.deepEqual(f.select.children.map(o => o.textContent), ["panel <safe>", "bar", "column", "icon"])
   assert.deepEqual([f.width.value, f.height.value, f.width.min, f.height.min], ["12", "10", "6", "8"])
   f.select.value = "bar"; await f.select.emit("change")
   assert.deepEqual([f.width.value, f.height.value, f.width.min, f.height.min], ["20", "4", "10", "4"])
-  f.width.value = "35"; f.height.value = "9"
+  f.width.value = "35"
   assert.equal((await f.submit()).prevented, true)
-  assert.deepEqual(f.adds, [{ nine: "panels/ui.json", slice: "bar", width: 35, height: 9 }])
+  assert.deepEqual(f.adds, [{ nine: "panels/ui.json", slice: "bar", width: 35, height: 4 }])
   assert.deepEqual(f.toasts().map(([name]) => name), ["ui.toast.success", "ui.toast.success"])
 })
+test("fixed-axis fields, attributes and source defaults follow slice changes", async () => {
+  const f = fixture(); await f.import()
+  for (const [name, w, h, minW, minH, maxW, maxH] of [
+    ["bar", 20, 4, 10, 4, undefined, 4],
+    ["column", 5, 20, 5, 10, 5, undefined],
+    ["icon", 8, 7, 8, 7, 8, 7],
+    ["panel <safe>", 12, 10, 6, 8, undefined, undefined],
+  ]) {
+    f.select.value = name; await f.select.emit("change")
+    assert.deepEqual([f.width.value, f.height.value], [String(w), String(h)])
+    for (const [control, min, max] of [[f.width, minW, maxW], [f.height, minH, maxH]]) {
+      assert.equal(control.attributes.min, String(min))
+      assert.equal(control.attributes.max, max === undefined ? undefined : String(max))
+      assert.equal(control.disabled, max !== undefined)
+    }
+    await f.submit()
+    assert.equal(f.adds.at(-1).slice, name)
+    assert.deepEqual([f.width.disabled, f.height.disabled], [maxW !== undefined, maxH !== undefined])
+  }
+})
+for (const name of ["bar", "column", "icon"]) {
+  test(`${name} fixed dimensions reject tampering and survive import/busy transitions`, async () => {
+    const f = fixture(); f.data = { ...data, slices: data.slices.filter(s => s.name === name) }; await f.import()
+    const fixed = name === "bar" ? [f.height] : name === "column" ? [f.width] : [f.width, f.height]
+    for (const control of fixed) {
+      assert.equal(control.disabled, true)
+      const original = control.value
+      for (const delta of [-1, 1]) {
+        control.value = String(Number(original) + delta); await f.submit()
+        assert.equal(f.adds.length, 0)
+        assert.match(f.toasts().at(-1)[1].message, /minimum|maximum|fixed/)
+        assert.equal(control.disabled, true)
+      }
+      control.value = original
+    }
+    const pending = deferred(); f.addResult = pending.promise
+    const adding = f.submit(); await tick()
+    assert.equal(f.width.disabled, true); assert.equal(f.height.disabled, true)
+    pending.resolve(); await adding
+    assert.deepEqual([f.width.disabled, f.height.disabled], [name !== "bar", name !== "column"])
+    f.choice = { cancelled: true }; await f.import()
+    assert.deepEqual([f.width.disabled, f.height.disabled], [name !== "bar", name !== "column"])
+  })
+}
 test("cancel and import errors preserve prior source and dimensions", async () => {
   const f = fixture(); await f.import(); f.width.value = "37"
   const before = snapshot(f)

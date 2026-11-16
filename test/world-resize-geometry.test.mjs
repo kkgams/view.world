@@ -51,3 +51,21 @@ test("renderer minima clamp each dragged edge while keeping the opposite edge fi
     assert.deepEqual(resizeBounds(bounds, "n", 1000, 1000, limits), { minX: 10, minY: 35, maxX: 40, maxY: 60 })
     assert.deepEqual(resizeBounds(bounds, "w", 1000, 1000, limits), { minX: 22, minY: 20, maxX: 40, maxY: 60 })
 })
+
+test("fixed axes suppress incompatible handles and both fixed axes suppress all handles", () => {
+    const horizontal = { minWidth: 6, minHeight: 40, maxHeight: 40 }
+    const vertical = { minWidth: 30, maxWidth: 30, minHeight: 8 }
+    assert.deepEqual(resizeHandles(bounds, horizontal).map(handle => handle.edge), ["e", "w"])
+    assert.deepEqual(resizeHandles(bounds, vertical).map(handle => handle.edge), ["n", "s"])
+    assert.deepEqual(resizeHandles(bounds, { ...horizontal, minWidth: 30, maxWidth: 30 }), [])
+    assert.equal(hitResizeHandle(bounds, { x: 25, y: 20 }, 4, 4, horizontal), null)
+    assert.equal(hitResizeHandle(bounds, { x: 40, y: 40 }, 4, 4, horizontal).edge, "e")
+})
+
+test("maximum dimensions stop expansion while retaining the opposite edge", () => {
+    const limits = { minWidth: 6, minHeight: 8, maxWidth: 50, maxHeight: 60 }
+    assert.deepEqual(resizeBounds(bounds, "nw", -1000, -1000, limits), { minX: -10, minY: 0, maxX: 40, maxY: 60 })
+    assert.deepEqual(resizeBounds(bounds, "se", 1000, 1000, limits), { minX: 10, minY: 20, maxX: 60, maxY: 80 })
+    const fixedHeight = { minWidth: 6, minHeight: 40, maxHeight: 40 }
+    assert.deepEqual(resizeBounds(bounds, "se", 10, 500, fixedHeight), { minX: 10, minY: 20, maxX: 50, maxY: 60 })
+})

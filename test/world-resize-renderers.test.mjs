@@ -108,7 +108,7 @@ function rendererFixture(name, origin = [0.5, 1]) {
   // Adapt only Host imports and browser APIs, not renderer logic.
   const body = sources[`world-renderers/${name}`].replace(/^import .*$/gm, "").replace(/^export /gm, "")
   const document = { format: "gams.nine", version: 1, image: "atlas.png", slices: [
-    { name: "panel", type: "region", bounds: { x: 0, y: 0, width: 20, height: 10 } },
+    { name: "panel", type: "nine", bounds: { x: 0, y: 0, width: 20, height: 10 }, center: { x: 2, y: 2, width: 16, height: 6 } },
   ] }
   const factory = new Function("runtime", "unwrap", "createImageBitmap", "ImageBitmap", "CSS", `${body}\nreturn createWorldObjectRenderer`)(
     { async invoke(op) { return { ok: op.endsWith("read-text") ? JSON.stringify(document) : [1, 2, 3] } } },
@@ -171,6 +171,27 @@ test("malformed optional minimum providers and limit values fail loudly", async 
     await assert.rejects(registryFixture(baseRenderer({ resizeLimits })), /resizeLimits must be a function/)
   for (const result of [null, [], {}, { minWidth: 0, minHeight: 1 }, { minWidth: 1, minHeight: -1 }, { minWidth: NaN, minHeight: 1 }, { minWidth: 1, minHeight: "2" }, { minWidth: Infinity, minHeight: 1 }, Promise.resolve({ minWidth: 1, minHeight: 1 })]) {
     const registry = await registryFixture(baseRenderer({ resizeLimits: () => result }))
+    assert.throws(() => registry.resizeLimits(matching()), /resize limits/)
+  }
+})
+
+test("registry preserves maximum limits, suppresses fully fixed objects and rejects maximum violations", async () => {
+  let calls = 0
+  const custom = baseRenderer({ resize() { calls++; return {} }, resizeLimits: () => ({ minWidth: 10, minHeight: 20, maxWidth: 50, maxHeight: 20 }) })
+  const registry = await registryFixture(custom)
+  assert.deepEqual(registry.resizeLimits(matching()), { minWidth: 10, minHeight: 20, maxWidth: 50, maxHeight: 20 })
+  assert.equal(registry.canResize(matching()), true)
+  assert.throws(() => registry.resize(matching(), { width: 51, height: 20 }), /maximum/)
+  assert.throws(() => registry.resize(matching(), { width: 50, height: 21 }), /maximum/)
+  assert.equal(calls, 0)
+  custom.resizeLimits = () => ({ minWidth: 10, minHeight: 20, maxWidth: 10, maxHeight: 20 })
+  assert.equal(registry.canResize(matching()), false)
+  assert.throws(() => registry.resize(matching(), { width: 10, height: 20 }), /does not support resize/)
+})
+
+test("registry rejects malformed maximum limits and maxima below minima", async () => {
+  for (const patch of [{ maxWidth: undefined }, { maxHeight: null }, { maxWidth: Infinity }, { maxWidth: "10" }, { maxHeight: 0 }, { maxWidth: 9 }, { maxHeight: 19 }]) {
+    const registry = await registryFixture(baseRenderer({ resize() {}, resizeLimits: () => ({ minWidth: 10, minHeight: 20, ...patch }) }))
     assert.throws(() => registry.resizeLimits(matching()), /resize limits/)
   }
 })

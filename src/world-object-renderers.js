@@ -197,7 +197,9 @@ export class WorldObjectRendererRegistry {
 
   canResize(object) {
     const { renderer } = this.rendererForObject(object)
-    return typeof renderer.resize === "function"
+    if (typeof renderer.resize !== "function") return false
+    const limits = this.resizeLimits(object)
+    return limits.minWidth !== limits.maxWidth || limits.minHeight !== limits.maxHeight
   }
 
   resizeLimits(object) {
@@ -209,7 +211,14 @@ export class WorldObjectRendererRegistry {
       assert(Number.isFinite(limits[field]) && limits[field] > 0,
         `world object renderer ${id} resize limits ${field} must be a positive finite number`)
     }
-    return { minWidth: limits.minWidth, minHeight: limits.minHeight }
+    const result = { minWidth: limits.minWidth, minHeight: limits.minHeight }
+    for (const [maximum, minimum] of [["maxWidth", "minWidth"], ["maxHeight", "minHeight"]]) {
+      if (!Object.hasOwn(limits, maximum)) continue
+      assert(Number.isFinite(limits[maximum]) && limits[maximum] >= limits[minimum],
+        `world object renderer ${id} resize limits ${maximum} must be finite and at least ${minimum}`)
+      result[maximum] = limits[maximum]
+    }
+    return result
   }
 
   resize(object, size) {
@@ -225,8 +234,14 @@ export class WorldObjectRendererRegistry {
       )
     }
     const limits = this.resizeLimits(object)
+    assert(limits.minWidth !== limits.maxWidth || limits.minHeight !== limits.maxHeight,
+      `world object renderer ${id} does not support resize`)
     assert(size.width >= limits.minWidth && size.height >= limits.minHeight,
       `world object renderer ${id} resize minimum is ${limits.minWidth} × ${limits.minHeight}`)
+    for (const [axis, maximum] of [["width", "maxWidth"], ["height", "maxHeight"]]) {
+      if (Object.hasOwn(limits, maximum)) assert(size[axis] <= limits[maximum],
+        `world object renderer ${id} resize ${axis} exceeds maximum ${limits[maximum]}`)
+    }
     const patch = renderer.resize(object, size)
     assert(
       isPlainObject(patch) &&

@@ -264,31 +264,34 @@ PNG, JPEG and WebP atlas images are supported. Duplicate names, malformed pixel
 rectangles, invalid centers, unknown slice types and out-of-atlas bounds fail.
 
 Nine-slices retain fixed-size corners while stretching edges and center. Each
-slice provides `minWidth`/`minHeight` from its fixed borders; border sizes never
-shrink to fit. The limits are derived from the existing slice geometry, not
+slice provides minimum dimensions from its fixed borders and maximum dimensions
+for any fixed axis; border sizes never shrink to fit. The limits come from the
+existing slice geometry, not
 additional authored JSON fields:
 
-| Slice type | Minimum width | Minimum height |
-| --- | --- | --- |
-| `nine` | `max(1, bounds.width - center.width)` | `max(1, bounds.height - center.height)` |
-| `horizontal` | `max(1, bounds.width - center.width)` | `bounds.height` |
-| `vertical` | `bounds.width` | `max(1, bounds.height - center.height)` |
-| `region` | 1 | 1 |
+| Slice type | Width range | Height range | Handles |
+| --- | --- | --- | --- |
+| `nine` | From `max(1, bounds.width - center.width)`, no maximum | From `max(1, bounds.height - center.height)`, no maximum | Eight |
+| `horizontal` | From `max(1, bounds.width - center.width)`, no maximum | Fixed at `bounds.height` | Left/right |
+| `vertical` | Fixed at `bounds.width` | From `max(1, bounds.height - center.height)`, no maximum | Top/bottom |
+| `region` | Fixed at `bounds.width` | Fixed at `bounds.height` | None |
 
 At the exact fixed-border minimum, the stretch center on that axis is omitted.
-The import form exposes these minima, handles stop at them, and undersized sizes
-from files or numeric edits are rejected. Invalid property edits leave the world
+The import form exposes these limits and disables fixed dimensions. Handles stop
+at the applicable limits; sizes outside them in files or numeric edits are rejected. Invalid property edits leave the world
 unchanged. The pause example's `menu-border` has minimum dimensions **641 × 622**.
 
-Horizontal/vertical slices stretch their active axis in three parts. Their other
-axis scales as one region but cannot shrink below the source dimension. A plain
-region scales its entire bounds. Drawing uses nearest-neighbor sampling; no tiling
-mode is added. Renderer `config.origin` controls destination bounds as for sprites.
+Horizontal/vertical slices stretch only their active axis in three parts; the
+other axis always retains its source size. A plain region draws at its source
+size and can move but cannot resize. Drawing uses nearest-neighbor sampling;
+no tiling mode is added. Renderer `config.origin` controls destination bounds as for sprites.
 
 ## Resize objects
 
-Select an unlocked nine-slice, rectangle or sprite to show eight canvas handles.
-Drag an edge to resize one dimension or a corner to resize both. Handles keep a
+Select an unlocked nine-slice, rectangle or sprite to show its permitted handles.
+Two-axis objects have eight handles; single-axis objects have two edge handles;
+fixed-size objects have none. Drag an edge to resize one dimension or a corner
+to resize both. Handles keep a
 constant screen size at different zoom levels and take priority over object
 movement. Ordinary interior dragging still moves the object. Spatial groups,
 points and tilemaps have no resize handles.
@@ -296,8 +299,8 @@ points and tilemaps have no resize handles.
 The opposite edge/corner stays anchored while the dragged edge moves. The editor
 updates position as needed for the renderer origin and parent-relative coordinates;
 axis inversion is supported. Pointer deltas snap to world pixels and changed
-dimensions clamp to the renderer
-minimum without flipping (one pixel when no limits are supplied). World positions remain
+dimensions clamp to the renderer's minimum/maximum without flipping (minimum
+one pixel and no maximum when no limits are supplied). World positions remain
 integers: for fractional renderer origins, position rounding can shift the anchored
 edge by at most half a world pixel. Top-left origins have no such shift.
 
@@ -334,16 +337,20 @@ source paths, organizational group or spatial metadata. A missing method means
 no resize support; a present non-function method or malformed patch is an error.
 
 A renderer may also implement synchronous `resizeLimits(object)`, returning
-`{ minWidth, minHeight }` for that particular object. Both values must be positive
-finite numbers. Omission means `{ minWidth: 1, minHeight: 1 }`. The View clamps the
-requested dimensions before calculating the anchored position or calling
-`resize()`. The nine-slice renderer uses the selected slice's fixed-border minima;
-`nineSliceLimits(slice)` exposes the same calculation for the renderer-owned
-import controls.
+`{ minWidth, minHeight, maxWidth?, maxHeight? }` for that particular object.
+Minima must be positive finite numbers; a supplied maximum must be finite and at
+least its corresponding minimum. An omitted maximum is unbounded. Omitting the
+method means `{ minWidth: 1, minHeight: 1 }` with no maxima. Equal minimum/maximum
+fixes an axis: only handles compatible with the remaining axes are shown. Fixing
+both axes makes that object non-resizable even if its renderer has `resize()`.
+
+The View clamps requested dimensions before calculating the anchored position
+or calling `resize()`. The nine-slice renderer derives ranges from the selected
+slice; `nineSliceLimits(slice)` exposes the same calculation for its own controls.
 
 `WorldObjectRendererRegistry.canResize(object)` reports support for the actually
 matched renderer; `resizeLimits(object)` validates its limits, and `resize(object,
-size)` rejects below-minimum requests before dispatching its patch.
+size)` rejects requests outside the limits and fully fixed objects before dispatching.
 The View owns handles, hit testing, pixel snapping, anchoring, preview/cancellation
 and history. Renderers own which properties represent their dimensions.
 

@@ -93,23 +93,28 @@ function objectData(object) {
 
 export function nineSliceLimits(slice) {
   const b = slice.bounds
-  if (slice.type === "region") return { minWidth: 1, minHeight: 1 }
+  if (slice.type === "region") return { minWidth: b.width, maxWidth: b.width, minHeight: b.height, maxHeight: b.height }
   const c = slice.center
   return {
     minWidth: slice.type === "vertical" ? b.width : Math.max(1, b.width - c.width),
     minHeight: slice.type === "horizontal" ? b.height : Math.max(1, b.height - c.height),
+    ...(slice.type === "horizontal" ? { maxHeight: b.height } : slice.type === "vertical" ? { maxWidth: b.width } : {}),
   }
 }
 
 function validateSize(size, slice) {
-  const { minWidth, minHeight } = nineSliceLimits(slice)
+  const { minWidth, minHeight, maxWidth, maxHeight } = nineSliceLimits(slice)
   assert(size.width >= minWidth && size.height >= minHeight,
     `nine renderer slice ${slice.name} requires minimum width ${minWidth} and height ${minHeight}`)
+  if (maxWidth !== undefined) assert(size.width <= maxWidth,
+    `nine renderer slice ${slice.name} requires maximum width ${maxWidth}`)
+  if (maxHeight !== undefined) assert(size.height <= maxHeight,
+    `nine renderer slice ${slice.name} requires maximum height ${maxHeight}`)
 }
 
 // Each entry is [source offset, source length, destination offset, destination length].
 function segments(length, start, center, target, active) {
-  if (!active) return [[0, length, 0, target]]
+  if (!active) return [[0, length, 0, length]]
   const end = length - start - center
   const fixed = start + end
   const middle = target - fixed
@@ -166,11 +171,15 @@ export function createWorldObjectRenderer({ config }) {
       const addButton = node("button", { type: "submit", "data-action": "add-nine" }, "Add slice object")
       form.append(addButton)
       element.append(node("legend", {}, "Nine slice"), importButton, pathOutput, form)
-      let active = true, busy = false, source = null
+      let active = true, busy = false, source = null, dimensionLimits = null
       const controls = [select, width, height, addButton]
       function updateControls() {
         importButton.disabled = busy
         for (const control of controls) control.disabled = busy || !source
+        if (dimensionLimits) {
+          width.disabled ||= dimensionLimits.maxWidth === dimensionLimits.minWidth
+          height.disabled ||= dimensionLimits.maxHeight === dimensionLimits.minHeight
+        }
       }
       function selectedSlice() {
         assert(source, "nine panel requires imported source")
@@ -178,14 +187,22 @@ export function createWorldObjectRenderer({ config }) {
         assert(slice, `nine panel missing imported slice ${select.value}`)
         return slice
       }
-      function resetDimensions() {
-        if (!active || busy || element.disabled) return
+      function setDimensions() {
         const slice = selectedSlice()
-        const limits = nineSliceLimits(slice)
-        width.min = String(limits.minWidth)
-        height.min = String(limits.minHeight)
+        dimensionLimits = nineSliceLimits(slice)
+        for (const [control, axis] of [[width, "Width"], [height, "Height"]]) {
+          control.setAttribute("min", String(dimensionLimits[`min${axis}`]))
+          const maximum = dimensionLimits[`max${axis}`]
+          if (maximum === undefined) control.removeAttribute("max")
+          else control.setAttribute("max", String(maximum))
+        }
         width.value = String(slice.bounds.width)
         height.value = String(slice.bounds.height)
+      }
+      function resetDimensions() {
+        if (!active || busy || element.disabled) return
+        setDimensions()
+        updateControls()
       }
       async function perform(action) {
         if (!active || busy || element.disabled) return
@@ -216,11 +233,7 @@ export function createWorldObjectRenderer({ config }) {
           select.replaceChildren(...document.slices.map(slice => node("option", { value: slice.name }, slice.name)))
           select.value = document.slices[0].name
           pathOutput.textContent = selection.path
-          const slice = selectedSlice(), limits = nineSliceLimits(slice)
-          width.min = String(limits.minWidth)
-          height.min = String(limits.minHeight)
-          width.value = String(slice.bounds.width)
-          height.value = String(slice.bounds.height)
+          setDimensions()
           await runtime.call("ui.toast.success", { message: `Imported ${selection.path}` })
         })
       }
@@ -228,11 +241,11 @@ export function createWorldObjectRenderer({ config }) {
         event.preventDefault()
         if (!source) return
         return perform(async () => {
-          const slice = selectedSlice(), limits = nineSliceLimits(slice)
+          const slice = selectedSlice()
           const w = Number(width.value), h = Number(height.value)
           assert(Number.isSafeInteger(w) && w > 0, "Slice width must be a positive integer")
           assert(Number.isSafeInteger(h) && h > 0, "Slice height must be a positive integer")
-          assert(w >= limits.minWidth && h >= limits.minHeight, `Slice minimum is ${limits.minWidth} × ${limits.minHeight}`)
+          validateSize({ width: w, height: h }, slice)
           await addObject({ nine: source.path, slice: slice.name, width: w, height: h })
           if (active) await runtime.call("ui.toast.success", { message: `Added slice ${slice.name}` })
         })
@@ -321,7 +334,9 @@ export function createWorldObjectRenderer({ config }) {
           "nine renderer resize " + field + " must be a positive finite number",
         )
       }
-      validateSize(size, prepared(object).slice)
+      const { slice } = prepared(object)
+      assert(slice.type !== "region", "nine renderer region does not support resizing")
+      validateSize(size, slice)
       return { width: size.width, height: size.height }
     },
 

@@ -92,9 +92,9 @@ test("only imports absolute Host runtime", () => {
 for (const type of ["region", "horizontal", "vertical", "nine"]) {
   test(`${type} draw geometry`, async () => {
     const f = fixture({ documents: { "panels/ui.json": doc("art/atlas.png", [slice(type)]) } })
-    const renderer = f.renderer(), obj = object({ slice: type }); await renderer.prepare([obj])
-    const xs = ["region", "vertical"].includes(type) ? [[10, 12, 0, 20]] : [[10, 2, 0, 2], [12, 6, 2, 14], [18, 4, 16, 4]]
-    const ys = ["region", "horizontal"].includes(type) ? [[20, 10, 0, 18]] : [[20, 3, 0, 3], [23, 2, 3, 10], [25, 5, 13, 5]]
+    const renderer = f.renderer(), obj = object({ slice: type, width: ["region", "vertical"].includes(type) ? 12 : 20, height: ["region", "horizontal"].includes(type) ? 10 : 18 }); await renderer.prepare([obj])
+    const xs = ["region", "vertical"].includes(type) ? [[10, 12, 0, 12]] : [[10, 2, 0, 2], [12, 6, 2, 14], [18, 4, 16, 4]]
+    const ys = ["region", "horizontal"].includes(type) ? [[20, 10, 0, 10]] : [[20, 3, 0, 3], [23, 2, 3, 10], [25, 5, 13, 5]]
     assert.deepEqual(draws(renderer, obj), ys.flatMap(([sy, sh, dy, dh]) => xs.map(([sx, sw, dx, dw]) => [sx, sy, sw, sh, dx, dy, dw, dh])))
     assert.deepEqual(f.reads, [["fs/fs::read-text", "panels/ui.json"], ["fs/fs::read-file", "art/atlas.png"]])
   })
@@ -109,20 +109,21 @@ test("exact border minimum keeps fixed corners and omits center", async () => {
 })
 for (const [type, expected] of [
   ["nine", { minWidth: 6, minHeight: 8 }],
-  ["horizontal", { minWidth: 6, minHeight: 10 }],
-  ["vertical", { minWidth: 12, minHeight: 8 }],
-  ["region", { minWidth: 1, minHeight: 1 }],
+  ["horizontal", { minWidth: 6, minHeight: 10, maxHeight: 10 }],
+  ["vertical", { minWidth: 12, maxWidth: 12, minHeight: 8 }],
+  ["region", { minWidth: 12, maxWidth: 12, minHeight: 10, maxHeight: 10 }],
 ]) {
   test(`${type} slice limits guard prepare, bounds, draw and resize`, async () => {
     const s = slice(type), f = fixture({ documents: { "panels/ui.json": doc("atlas.png", [s]) } })
-    const r = f.renderer(), obj = object({ slice: type })
+    const r = f.renderer(), obj = object({ slice: type, width: expected.maxWidth ?? 20, height: expected.maxHeight ?? 18 })
     assert.deepEqual(f.nineSliceLimits(s), expected)
     assert.throws(() => r.resizeLimits(obj), /not prepared/)
     assert.throws(() => r.resize(obj, { width: 20, height: 18 }), /not prepared/)
     await r.prepare([obj])
     assert.deepEqual(r.resizeLimits(obj), expected)
     const exact = { width: expected.minWidth, height: expected.minHeight }
-    assert.deepEqual(r.resize(obj, exact), exact)
+    if (type === "region") assert.throws(() => r.resize(obj, exact), /region.*resiz/)
+    else assert.deepEqual(r.resize(obj, exact), exact)
     const minimum = object({ slice: type, ...exact })
     await r.prepare([minimum])
     assert.ok(draws(r, minimum).length > 0)
@@ -133,8 +134,21 @@ for (const [type, expected] of [
       await assert.rejects(r.prepare([undersize]), message)
       assert.throws(() => r.bounds(undersize), message)
       assert.throws(() => draws(r, undersize), message)
-      assert.throws(() => r.resize(minimum, size), message)
+      assert.throws(() => r.resize(minimum, size), type === "region" ? /region.*resiz/ : message)
       assert.ok(draws(r, minimum).length > 0)
+    }
+    for (const [axis, maximum] of [["width", expected.maxWidth], ["height", expected.maxHeight]]) {
+      if (maximum === undefined) continue
+      const size = { ...exact, [axis]: maximum + 0.5 }, oversized = object({ slice: type, ...size })
+      const message = /maximum/
+      await assert.rejects(r.prepare([oversized]), message)
+      assert.throws(() => r.bounds(oversized), message)
+      assert.throws(() => draws(r, oversized), message)
+      assert.throws(() => r.resize(minimum, size), type === "region" ? /region.*resiz/ : message)
+      assert.ok(draws(r, minimum).length > 0)
+    }
+    for (const size of [null, {}, { width: "12", height: 10 }, { width: 12, height: Infinity }]) {
+      assert.throws(() => r.resize(object({ nine: "unprepared.json" }), size), /positive finite/)
     }
     r.dispose()
   })
@@ -149,6 +163,19 @@ test("undersized staged document preserves old cache and closes staged atlas", a
   assert.throws(() => r.bounds(object({ nine: "new.json" })), /not prepared/)
   r.dispose()
 })
+for (const type of ["region", "horizontal", "vertical"]) {
+  test(`${type} fixed-axis failure preserves old cache and closes staged atlas`, async () => {
+    const f = fixture({ documents: { "new.json": doc("new.png", [slice(type)]) } }), r = f.renderer(), old = object()
+    await r.prepare([old])
+    const size = type === "horizontal" ? { width: 20, height: 11 } : { width: 13, height: 10 }
+    await assert.rejects(r.prepare([object({ nine: "new.json", slice: type, ...size })]), /maximum/)
+    assert.equal(f.images[0].closed, 0)
+    assert.equal(f.images[1].closed, 1)
+    assert.equal(draws(r, old).length, 9)
+    assert.throws(() => r.bounds(object({ nine: "new.json", slice: type, ...size })), /not prepared/)
+    r.dispose()
+  })
+}
 test("origins, bounds, config and object properties", async () => {
   const f = fixture(), origin = [0.5, 1], r = f.renderer({ origin }), obj = object(); origin[0] = 0
   await r.prepare([obj])
@@ -197,7 +224,8 @@ for (const type of ["nine", "horizontal", "vertical"]) {
   test(`borderless ${type} limits retain one pixel and inactive dimension`, async () => {
     const s = slice(type); s.center = { x: 0, y: 0, width: 12, height: 10 }
     const f = fixture({ documents: { "panels/ui.json": doc("atlas.png", [s]) } }), r = f.renderer()
-    const expected = { minWidth: type === "vertical" ? 12 : 1, minHeight: type === "horizontal" ? 10 : 1 }
+    const expected = { minWidth: type === "vertical" ? 12 : 1, minHeight: type === "horizontal" ? 10 : 1,
+      ...(type === "vertical" ? { maxWidth: 12 } : type === "horizontal" ? { maxHeight: 10 } : {}) }
     assert.deepEqual(f.nineSliceLimits(s), expected)
     const obj = object({ slice: type, width: expected.minWidth, height: expected.minHeight })
     await r.prepare([obj])

@@ -875,3 +875,40 @@ test("stale preparation failure on disconnect cannot replace the current registr
         assert.equal(calls.filter(call => call[0] === "old" && call[1] === "dispose").length, 1)
     } finally { Registry.create = previousFactory }
 })
+
+for (const [name, limits, edges, pointer] of [
+    ["horizontal", { minWidth: 10, minHeight: 40, maxHeight: 40 }, ["e", "w"], { x: 30, y: 20 }],
+    ["vertical", { minWidth: 40, maxWidth: 40, minHeight: 10 }, ["n", "s"], { x: 50, y: 40 }],
+    ["region", { minWidth: 40, maxWidth: 40, minHeight: 40, maxHeight: 40 }, [], { x: 50, y: 60 }],
+]) {
+    test(`${name} selection draws and hits only permitted-axis handles`, () => {
+        const { world, canvas } = resizeView([{ x: 10, y: 20, render: "nine", width: 40, height: 40 }])
+        canvas.rendererRegistry.resizeLimits = () => limits
+        canvas.rendererRegistry.canResize = () => limits.minWidth !== limits.maxWidth || limits.minHeight !== limits.maxHeight
+        const squares = []
+        const ctx = { save() {}, restore() {}, strokeRect() {}, beginPath() {}, arc() {}, fill() {}, stroke() {}, fillRect(x, y, width, height) { squares.push({ x: x + width / 2, y: y + height / 2 }) } }
+        canvas.drawSelection(ctx, world.objects[0])
+        const expected = resize.resizeHandles(canvas.objectCanvasBounds(world.objects[0]), limits)
+        assert.deepEqual(expected.map(handle => handle.edge), edges)
+        assert.deepEqual(squares, expected.map(({ x, y }) => ({ x, y })))
+        assert.equal(canvas.selectedResizeHandle(pointer), null)
+        for (const handle of expected) assert.equal(canvas.selectedResizeHandle(handle).edge, handle.edge)
+    })
+}
+
+test("fixed-height handle drag changes width only and maximum width preserves opposite edge", () => {
+    const { world, canvas } = resizeView()
+    canvas.rendererRegistry.resizeLimits = () => ({ minWidth: 10, maxWidth: 60, minHeight: 20, maxHeight: 20 })
+    const handle = pressResize(canvas, "w"), before = canvas.objectCanvasBounds(world.objects[0])
+    resizeMove(canvas, handle, -1000, 500)
+    const preview = canvas.snapshot.objects[0], bounds = canvas.objectCanvasBounds(preview)
+    assert.equal(preview.props.width, 60)
+    assert.equal(preview.props.height, 20)
+    assert.equal(preview.y, 20)
+    assert.equal(bounds.maxX, before.maxX)
+    assert.equal(bounds.minY, before.minY)
+    resizeRelease(canvas, handle, -1000, 500)
+    assert.equal(world.objects[0].props.width, 60)
+    world.undo(); assert.equal(world.objects[0].props.width, 40)
+    world.redo(); assert.equal(world.objects[0].props.width, 60)
+})

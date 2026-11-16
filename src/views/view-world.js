@@ -1875,7 +1875,7 @@ export class ViewWorld extends ViewCanvasBase {
         if (selected && this.canResizeObject(object)) {
             const size = this.resizeScreenSize(7)
             ctx.lineWidth = 1 / this.scale
-            for (const handle of resizeHandles(this.objectCanvasBounds(object))) {
+            for (const handle of resizeHandles(this.objectCanvasBounds(object), this.rendererRegistry.resizeLimits(object))) {
                 ctx.fillRect(handle.x - size.x / 2, handle.y - size.y / 2, size.x, size.y)
                 ctx.strokeRect(handle.x - size.x / 2, handle.y - size.y / 2, size.x, size.y)
             }
@@ -1896,7 +1896,7 @@ export class ViewWorld extends ViewCanvasBase {
         const object = this.snapshot.objects.find(object => object.editorId === this.snapshot.activeObjectId)
         if (!object || !this.canResizeObject(object)) return null
         const tolerance = this.resizeScreenSize(6)
-        const handle = hitResizeHandle(this.objectCanvasBounds(object), this.projectToCanvasPoint(point), tolerance.x, tolerance.y)
+        const handle = hitResizeHandle(this.objectCanvasBounds(object), this.projectToCanvasPoint(point), tolerance.x, tolerance.y, this.rendererRegistry.resizeLimits(object))
         return handle ? { ...handle, object } : null
     }
 
