@@ -15,4 +15,9 @@ registry = registry.replace(loader_import, "").replace(registry_export, "class W
 inline = loader_import + "\nconst WorldObjectRendererRegistry = (() => {\n" + registry + "\nreturn WorldObjectRendererRegistry\n})()"
 output = ROOT / "build.nosync/views/view-world.js"
 output.parent.mkdir(parents=True, exist_ok=True)
-output.write_text(view.replace(view_import, inline))
+spatial_import = 'import { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } from "../spatial.mjs"'
+spatial = (ROOT / "src/spatial.mjs").read_text().replace("export function", "function")
+spatial_inline = "const { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } = (() => {\n" + spatial + "\nreturn { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants }\n})()"
+if view.count(spatial_import) != 1:
+    raise SystemExit("Expected spatial import")
+output.write_text(view.replace(view_import, inline).replace(spatial_import, spatial_inline))

@@ -23,7 +23,7 @@ use pinned released Views.
 | `make build` | Assemble the View and renderer registry into `build.nosync/views/view-world.js`. |
 | `make open` | Build and open the local Project in the released Host with explicit `GAMS_APP_CWD` and `GAMS_CONFIG`. |
 | `make check` | Check canonical and assembled JavaScript syntax without dependencies. |
-| `make test` | Run native renderer and registry tests. |
+| `make test` | Run native renderer, registry and spatial-group tests. |
 | `make package` | Build `view.world.zip` and `SHA256SUMS` under `build.nosync/`. |
 | `make serve-docs DOCS_PORT=8080` | Preview this wiki with pinned justgook/wiki v1.4.0. |
 | `make validate-docs` | Validate wiki content. |
@@ -48,6 +48,60 @@ The View owns its renderer registry. Host-owned imports include `/core/runtime.j
 `/util/undo.js`, `/util/view-canvas-base.js`, `/util/require.js`,
 `/util/qoi/decode.js` and `/util/tilemap-render.js`; their implementations are not
 bundled in the View ZIP.
+
+## Spatial groups
+
+Use **Add group** to create a translation-only group at the viewport center.
+Select an object or group, then choose its **Parent** in the position inspector.
+Choosing **World (no parent)** detaches it. Reparenting keeps the selected record
+and its descendants at the same world positions; self/descendant parents are
+excluded. Edit group names through Properties (`name`).
+
+Click a group heading, or focus it and press Enter/Space, to select it and toggle
+its nested sidebar rows. Collapsing affects only the sidebar, never canvas
+visibility. On the canvas, select/drag a group by its origin marker or bounds
+border; the interior remains available for selecting children. Selected group
+borders take hit priority. Empty groups still have an origin marker. Position X/Y
+are integer offsets **relative to the parent**; moving a group by dragging or
+Apply translates all descendants without changing their local offsets. Axis
+inversion also applies to group origins and drag deltas.
+
+**Delete keeps children.** Deleting a group reparents its direct children to the
+deleted group's parent (or World), preserving their world positions and nested
+subtrees. Group creation, parenting, movement and deletion support Undo/Redo.
+Save/Open retains the full hierarchy.
+
+World files remain flat JSON arrays. The reserved top-level `spatial` field is
+separate from ordinary renderer properties and legacy `group` labels:
+
+```json
+[
+  { "x": 100, "y": 50, "name": "Town", "spatial": { "id": "town", "group": true } },
+  { "x": 20, "y": 10, "name": "House", "spatial": { "id": "house", "group": true, "parent": "town" } },
+  { "x": 5, "y": 8, "render": "rectangle", "width": 32, "height": 16, "color": "red", "spatial": { "id": "door", "parent": "house" } }
+]
+```
+
+Here Door's world position is `(125, 68)`. Every spatial record has a unique
+non-empty string `id`; optional `parent` references another spatial record whose
+`group` is `true`. Omit `parent` for a world-relative record. Unknown spatial
+fields, malformed metadata, duplicate spatial IDs, missing/non-group parents and
+cycles are errors. IDs are independent of an object's ordinary `id` property.
+The editor generates spatial IDs when creating groups or parenting legacy objects.
+`spatial` is edited through the group/parent controls, not the Properties popup.
+
+Existing arrays without `spatial` retain their positions and fields. Legacy
+`group` properties remain organizational, contiguous stacking blocks with their
+existing collapse/reorder actions; they do not define spatial parents. Their
+collapse state is independent of spatial groups. Old arbitrary properties named
+`spatial` must be renamed before using this reserved field.
+
+Spatial hierarchy controls coordinates, **not compositing**: leaf objects draw
+in the original flat array order, regardless of parent; reparenting does not
+reorder them. Up/Down still reorders flat records (or legacy organizational
+blocks); moving a spatial group record does not reorder its descendants. Groups
+have editor bounds/markers, not renderer artwork. There is no rotation, scale,
+clipping or alternate world DSL.
 
 ## Renderer configuration
 
@@ -109,5 +163,6 @@ owns ordering, selection, hit testing and viewport state. `frame` supplies
 
 Custom property inputs belong in `config.inputs`; axis inversion belongs in
 `config.invert`. Both inversions are disabled in the local Project.
-Native tests cover renderer/registry behavior, not native GUI editing, undo or
-full configured plugin integration.
+Native tests cover renderer/registry behavior, spatial state commands, history
+command effects and canvas geometry/interactions. Native Host GUI gestures and
+full configured plugin integration remain separate checks.

@@ -19,7 +19,7 @@ and tilemap renderers; unmatched objects use the built-in point renderer.
 | `make build` | Assemble the View and its renderer registry into one Host-loadable module. |
 | `make open` | Build, download the released Host if absent, then open local `gams.json`. |
 | `make check` | Check canonical and assembled JavaScript syntax. |
-| `make test` | Run native renderer and registry tests. |
+| `make test` | Run native renderer, registry and spatial-group tests. |
 | `make package` | Build `build.nosync/view.world.zip` and `SHA256SUMS`. |
 | `make serve-docs DOCS_PORT=8080` | Preview documentation with pinned wiki v1.4.0. |
 | `make validate-docs` | Validate documentation. |
@@ -31,3 +31,6 @@ Gatekeeper. Optional user inputs in `dev-assets/` are neither packaged nor clean
 The ZIP includes `views/view-world.js` and `world-renderers/{rectangle,sprite,tilemap}.js`.
 Projects select renderer modules through `$file` archive entries in
 `ui.views.view-world.config.renderers`; see [renderer configuration](docs/index.md#renderer-configuration).
+
+Spatial groups support nested parent-relative positions and movement. See
+[spatial groups](docs/index.md#spatial-groups) for controls, storage and deletion policy.

@@ -1,6 +1,7 @@
 import { runtime, unwrap } from "/core/runtime.js"
 import { UndoHistory } from "/util/undo.js"
 import { ViewCanvasBase } from "/util/view-canvas-base.js"
+import { isSpatialGroup, spatialParent, validateSpatial, worldPosition, spatialDescendants } from "../spatial.mjs"
 import { WorldObjectRendererRegistry } from "../world-object-renderers.js"
 
 const GRID_SIZE = 16
@@ -66,14 +67,18 @@ function cloneProps(input, label) {
     assert(input && typeof input === "object" && !Array.isArray(input), `${label} must be an object`)
     const props = {}
     for (const [key, value] of Object.entries(input)) {
-        assert(key !== "x" && key !== "y", `${label}.${key} is reserved`)
+        assert(key !== "x" && key !== "y" && key !== "spatial", `${label}.${key} is reserved`)
         props[key] = cloneJsonValue(value, `${label}.${key}`)
     }
     return props
 }
 
 function cloneObject(object) {
-    return { ...object, props: cloneProps(object.props, "world object props") }
+    return {
+        ...object,
+        ...(object.spatial === undefined ? {} : { spatial: { ...object.spatial } }),
+        props: cloneProps(object.props, "world object props"),
+    }
 }
 
 function cloneObjects(objects) {
@@ -191,12 +196,13 @@ class WorldState {
         const world = JSON.parse(data)
         assert(Array.isArray(world), "world file data must be an array")
 
-        this.nextObjectId = 1
         const objects = world.map((object, index) => this.parseObject(object, index))
         this.validateGroupContiguity(objects)
+        validateSpatial(objects)
         this.path = path
         this.loaded = true
         this.objects = objects
+        this.nextObjectId = objects.length + 1
         this.activeObjectId = 0
         this.dirty = false
         this.resetHistory()
@@ -209,9 +215,10 @@ class WorldState {
         )
         assert(Number.isInteger(object.x), `world object ${index}.x must be an integer`)
         assert(Number.isInteger(object.y), `world object ${index}.y must be an integer`)
-        const { x, y, ...props } = object
+        const { x, y, spatial, ...props } = object
         return {
-            editorId: this.allocateObjectId(),
+            editorId: index + 1,
+            ...(spatial === undefined ? {} : { spatial: cloneJsonValue(spatial, "world spatial") }),
             x,
             y,
             props: cloneProps(props, `world object ${index} properties`),
@@ -225,6 +232,7 @@ class WorldState {
                 x: object.x,
                 y: object.y,
                 ...object.props,
+                ...(object.spatial === undefined ? {} : { spatial: object.spatial }),
             })),
             null,
             2,
@@ -275,21 +283,71 @@ class WorldState {
         return object.editorId
     }
 
+    addGroup(x, y) {
+        assert(Number.isFinite(x) && Number.isFinite(y), "world group position must be finite")
+        const previous = cloneObjects(this.objects)
+        const editorId = this.allocateObjectId()
+        const id = this.newSpatialId()
+        const group = {
+            editorId,
+            x: Math.round(x),
+            y: Math.round(y),
+            props: { name: id },
+            spatial: { id, group: true },
+        }
+        this.replaceObjectsCommand("Add spatial group", previous, [...previous, group], editorId)
+        return editorId
+    }
+
+    newSpatialId() {
+        let index = 1
+        const ids = new Set(this.objects.filter((object) => object.spatial !== undefined).map((object) => object.spatial.id))
+        while (ids.has(`group-${index}`)) index++
+        return `group-${index}`
+    }
+
+    reparentObject(editorId, parentId) {
+        assert(typeof parentId === "string", "world spatial parent must be string")
+        const object = this.requireObject(editorId)
+        if (spatialParent(object) === parentId) return false
+        const previous = cloneObjects(this.objects)
+        const next = cloneObjects(this.objects)
+        const target = next.find((candidate) => candidate.editorId === editorId)
+        const position = worldPosition(previous, object)
+        if (target.spatial === undefined) target.spatial = { id: this.newSpatialId() }
+        if (parentId) target.spatial.parent = parentId
+        else delete target.spatial.parent
+        validateSpatial(next)
+        const parent = parentId ? next.find((candidate) => candidate.spatial !== undefined && candidate.spatial.id === parentId) : null
+        const origin = parent ? worldPosition(next, parent) : { x: 0, y: 0 }
+        target.x = position.x - origin.x
+        target.y = position.y - origin.y
+        this.replaceObjectsCommand("Reparent object", previous, next, editorId)
+        return true
+    }
+
     deleteObject(editorId) {
-        const index = this.indexForId(editorId)
-        const object = cloneObject(this.objects[index])
+        const object = this.requireObject(editorId)
+        const previous = cloneObjects(this.objects)
         const previousActive = this.activeObjectId
-        this.executeDirtyCommand(
-            "Delete object",
-            () => {
-                this.objects.splice(this.indexForId(editorId), 1)
-                this.activeObjectId = 0
-            },
-            () => {
-                this.objects.splice(index, 0, cloneObject(object))
-                this.activeObjectId = previousActive
-            },
-        )
+        const next = cloneObjects(this.objects).filter((candidate) => candidate.editorId !== editorId)
+        if (isSpatialGroup(object)) {
+            for (const child of next) {
+                if (spatialParent(child) !== object.spatial.id) continue
+                child.x += object.x
+                child.y += object.y
+                if (spatialParent(object)) child.spatial.parent = spatialParent(object)
+                else delete child.spatial.parent
+            }
+        }
+        validateSpatial(next)
+        this.executeDirtyCommand("Delete object (keep children)", () => {
+            this.objects = cloneObjects(next)
+            this.activeObjectId = 0
+        }, () => {
+            this.objects = cloneObjects(previous)
+            this.activeObjectId = previousActive
+        })
     }
 
     selectObject(editorId) {
@@ -461,6 +519,8 @@ class WorldState {
     }
 
     replaceObjectsCommand(label, previous, next, activeObjectId) {
+        const previousActive = this.activeObjectId
+        validateSpatial(next)
         this.executeDirtyCommand(
             label,
             () => {
@@ -469,7 +529,7 @@ class WorldState {
             },
             () => {
                 this.objects = cloneObjects(previous)
-                this.activeObjectId = activeObjectId
+                this.activeObjectId = previousActive
             },
         )
     }
@@ -626,7 +686,8 @@ export class ViewWorld extends ViewCanvasBase {
           </table>
         </fieldset>
         <fieldset>
-          <legend>Position</legend>
+          <legend>Position (relative to parent)</legend>
+          <label>Parent <select data-field="parent" aria-label="Spatial parent"></select></label>
           <form data-element="position" novalidate>
             <label>X <input type="number" step="1" data-field="x" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
             <label>Y <input type="number" step="1" data-field="y" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>
@@ -728,6 +789,7 @@ export class ViewWorld extends ViewCanvasBase {
         <button type="button" data-action="reload"><i aria-hidden="true">refresh</i></button>
       </div>
       <div role="buttongroup" data-element="tool-actions">
+        <button type="button" data-action="add-group" aria-label="Add spatial group">Add group</button>
         <button type="button" data-action="add"><i aria-hidden="true">add_location</i></button>
         <button type="button" data-action="delete" class="danger"><i aria-hidden="true">delete</i></button>
         <button type="button" data-action="properties"><i aria-hidden="true">tune</i></button>
@@ -762,13 +824,17 @@ export class ViewWorld extends ViewCanvasBase {
             await this.refreshSnapshot("Object selected")
         })
         this.objectsElement.addEventListener("keydown", async (event) => {
-            const heading = event.target.closest('th[role="button"][data-action="group-toggle"]')
+            const heading = event.target.closest('th[role="button"][aria-expanded]')
             if (!(heading instanceof HTMLTableCellElement)) return
             if (event.key !== "Enter" && event.key !== " ") return
             event.preventDefault()
             await this.handleListAction(heading)
         })
 
+        this.querySelector('[data-field="parent"]').addEventListener("change", async (event) => {
+            this.state.reparentObject(this.state.activeObjectId, event.target.value)
+            await this.refreshSnapshot("Parent updated; world position preserved")
+        })
         this.positionFormElement.addEventListener("submit", async (event) => {
             event.preventDefault()
             await this.applyPosition()
@@ -787,6 +853,7 @@ export class ViewWorld extends ViewCanvasBase {
         this.queryHeader('[data-action="save-as"]').addEventListener("click", async () => this.saveAs())
         this.queryHeader('[data-action="reload"]').addEventListener("click", async () => this.reload())
         this.queryHeader('[data-action="add"]').addEventListener("click", async () => this.add())
+        this.queryHeader('[data-action="add-group"]').addEventListener("click", async () => this.add(true))
         this.queryHeader('[data-action="delete"]').addEventListener("click", async () => this.deleteSelected())
         this.queryHeader('[data-action="properties"]').addEventListener("click", async () => this.edit())
         this.queryHeader('[data-action="undo"]').addEventListener("click", async () => this.undo())
@@ -945,7 +1012,7 @@ export class ViewWorld extends ViewCanvasBase {
         })
     }
 
-    async add() {
+    async add(group = false) {
         if (!this.state.loaded) {
             this.setStatus("Create or open a world before adding objects", "info")
             return
@@ -955,8 +1022,9 @@ export class ViewWorld extends ViewCanvasBase {
             x: (this.canvas.width / 2 - this.offsetX) / this.scale,
             y: (this.canvas.height / 2 - this.offsetY) / this.scale,
         })
-        this.state.addObject(point.x, point.y)
-        await this.refreshSnapshot("Object added")
+        if (group) this.state.addGroup(point.x, point.y)
+        else this.state.addObject(point.x, point.y)
+        await this.refreshSnapshot(group ? "Spatial group added" : "Object added")
     }
 
     async deleteSelected() {
@@ -1052,7 +1120,14 @@ export class ViewWorld extends ViewCanvasBase {
             this.state.selectObject(editorId)
             if (action === "object-up") this.state.moveObject(editorId, 1)
             else if (action === "object-down") this.state.moveObject(editorId, -1)
-            else if (action === "object-props") {
+            else if (action === "spatial-toggle") {
+                this.snapshot = validateSnapshot(this.state.snapshot())
+                this.toggleGroupCollapsed(`spatial:${editorId}`)
+                this.renderSnapshot(this.snapshot)
+                this.setData(this.snapshot, { autoFit: false })
+                this.objectsElement.querySelector(`tr[data-object-id="${editorId}"] th`).focus()
+                return
+            } else if (action === "object-props") {
                 await this.edit()
                 return
             } else if (action === "object-delete") this.state.deleteObject(editorId)
@@ -1061,7 +1136,10 @@ export class ViewWorld extends ViewCanvasBase {
             const group = groupRow.dataset.group
             assert(group, "view-world group action requires group")
             if (action === "group-toggle") {
-                this.toggleGroupCollapsed(group)
+                this.toggleGroupCollapsed(`legacy:${group}`)
+                this.objectsElement.querySelectorAll('th[data-action="group-toggle"]').forEach((heading) => {
+                    if (heading.closest("tr").dataset.group === group) heading.focus()
+                })
                 return
             }
             if (action === "group-up") this.state.moveGroup(group, 1)
@@ -1085,13 +1163,14 @@ export class ViewWorld extends ViewCanvasBase {
 
     async prepareRenderers(snapshot) {
         assert(this.rendererRegistry instanceof WorldObjectRendererRegistry, "view-world renderers must be initialized")
+        const renderObjects = snapshot.objects.filter((object) => !isSpatialGroup(object))
         const key = JSON.stringify(
-            snapshot.objects
+            renderObjects
                 .map((object) => ({ editorId: object.editorId, props: object.props }))
                 .toSorted((a, b) => a.editorId - b.editorId),
         )
         if (key === this.rendererPreparationKey) return
-        await this.rendererRegistry.prepare(snapshot.objects)
+        await this.rendererRegistry.prepare(renderObjects)
         this.rendererPreparationKey = key
     }
 
@@ -1117,7 +1196,10 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     pruneCollapsedGroups(snapshot) {
-        const available = new Set(snapshot.objects.map(objectGroup).filter((group) => group.length > 0))
+        const available = new Set([
+            ...snapshot.objects.map(objectGroup).filter((group) => group.length > 0).map((group) => `legacy:${group}`),
+            ...snapshot.objects.filter(isSpatialGroup).map((object) => `spatial:${object.editorId}`),
+        ])
         for (const group of this.collapsedGroups) {
             if (!available.has(group)) this.collapsedGroups.delete(group)
         }
@@ -1143,24 +1225,28 @@ export class ViewWorld extends ViewCanvasBase {
             return
         }
 
-        const units = this.state.units().toReversed()
-        for (const unit of units) {
-            if (unit.group) {
-                this.objectsElement.appendChild(this.createGroupRow(unit.group))
-                if (this.collapsedGroups.has(unit.group)) continue
-            }
-            for (const unitObject of unit.objects.toReversed()) {
-                const index = snapshot.objects.findIndex((object) => object.editorId === unitObject.editorId)
-                assert(index >= 0, `view-world missing snapshot object ${unitObject.editorId}`)
-                this.objectsElement.appendChild(
-                    this.createObjectRow(snapshot.objects[index], index, Boolean(unit.group)),
-                )
+        const appendChildren = (parent, depth) => {
+            const children = snapshot.objects.filter((object) => spatialParent(object) === parent).toReversed()
+            let legacyGroup = ""
+            for (const object of children) {
+                const group = objectGroup(object)
+                if (group !== legacyGroup && group) this.objectsElement.appendChild(this.createGroupRow(group))
+                legacyGroup = group
+                if (group && this.collapsedGroups.has(`legacy:${group}`)) continue
+                const index = snapshot.objects.indexOf(object)
+                const row = this.createObjectRow(object, index, Boolean(group))
+                row.firstChild.prepend(document.createTextNode("\u00a0\u00a0".repeat(depth)))
+                this.objectsElement.appendChild(row)
+                if (isSpatialGroup(object) && !this.collapsedGroups.has(`spatial:${object.editorId}`)) {
+                    appendChildren(object.spatial.id, depth + 1)
+                }
             }
         }
+        appendChildren("", 0)
     }
 
     createGroupRow(group) {
-        const collapsed = this.collapsedGroups.has(group)
+        const collapsed = this.collapsedGroups.has(`legacy:${group}`)
         const row = document.createElement("tr")
         row.dataset.group = group
         const nameCell = document.createElement("th")
@@ -1189,9 +1275,16 @@ export class ViewWorld extends ViewCanvasBase {
         row.dataset.objectId = String(object.editorId)
         if (object.editorId === this.snapshot.activeObjectId) row.setAttribute("aria-selected", "true")
 
-        const nameCell = document.createElement("td")
+        const nameCell = document.createElement(isSpatialGroup(object) ? "th" : "td")
+        if (isSpatialGroup(object)) {
+            nameCell.dataset.action = "spatial-toggle"
+            nameCell.setAttribute("role", "button")
+            nameCell.tabIndex = 0
+            nameCell.setAttribute("aria-expanded", String(!this.collapsedGroups.has(`spatial:${object.editorId}`)))
+            nameCell.setAttribute("aria-label", `Select and toggle ${objectDisplayName(object, index)}`)
+        }
         const indent = grouped ? "\u00a0\u00a0\u00a0\u00a0" : ""
-        nameCell.textContent = `${indent}${objectDisplayName(object, index)}`
+        nameCell.textContent = `${indent}${isSpatialGroup(object) ? "Group: " : ""}${objectDisplayName(object, index)}`
         row.appendChild(nameCell)
         const positionCell = document.createElement("td")
         positionCell.textContent = `${object.x}, ${object.y}`
@@ -1209,6 +1302,7 @@ export class ViewWorld extends ViewCanvasBase {
         const button = document.createElement("button")
         button.type = "button"
         button.dataset.action = action
+        button.setAttribute("aria-label", action.replaceAll("-", " "))
         const iconElement = document.createElement("i")
         iconElement.setAttribute("aria-hidden", "true")
         iconElement.textContent = icon
@@ -1219,6 +1313,18 @@ export class ViewWorld extends ViewCanvasBase {
     renderInspector(snapshot) {
         this.propsElement.replaceChildren()
         const object = snapshot.objects.find((candidate) => candidate.editorId === snapshot.activeObjectId)
+        const parentSelect = this.querySelector('[data-field="parent"]')
+        assert(parentSelect instanceof HTMLSelectElement, "view-world missing parent select")
+        parentSelect.replaceChildren(new Option("World (no parent)", ""))
+        parentSelect.disabled = !object
+        if (object) {
+            const excluded = spatialDescendants(snapshot.objects, object)
+            for (const candidate of snapshot.objects) {
+                if (!isSpatialGroup(candidate) || excluded.has(candidate.editorId)) continue
+                parentSelect.add(new Option(`${objectDisplayName(candidate, snapshot.objects.indexOf(candidate))} (${candidate.spatial.id})`, candidate.spatial.id))
+            }
+            parentSelect.value = spatialParent(object)
+        }
         const editButton = this.querySelector('[data-action="edit-properties"]')
         const applyButton = this.querySelector('[data-action="apply-position"]')
         assert(editButton instanceof HTMLButtonElement, "view-world missing edit props")
@@ -1313,6 +1419,7 @@ export class ViewWorld extends ViewCanvasBase {
         saveAs.disabled = !snapshot.loaded
         reload.disabled = !snapshot.loaded
         add.disabled = !snapshot.loaded
+        this.queryHeader('[data-action="add-group"]').disabled = !snapshot.loaded
         remove.disabled = snapshot.activeObjectId === 0
         properties.disabled = snapshot.activeObjectId === 0
         undo.disabled = !snapshot.canUndo
@@ -1326,22 +1433,40 @@ export class ViewWorld extends ViewCanvasBase {
             this.rendererRegistry instanceof WorldObjectRendererRegistry,
             "view-world content bounds require initialized renderers",
         )
-        const bounds = snapshot.objects.map((object) => {
-            const local = this.rendererRegistry.bounds(object)
-            const anchor = this.projectToCanvasPoint(object)
-            return {
-                minX: anchor.x + local.minX,
-                minY: anchor.y + local.minY,
-                maxX: anchor.x + local.maxX,
-                maxY: anchor.y + local.maxY,
-            }
-        })
+        const bounds = snapshot.objects.map((object) => this.objectCanvasBounds(object, snapshot.objects))
+
         return {
             minX: Math.min(...bounds.map((entry) => entry.minX)) - 32,
             minY: Math.min(...bounds.map((entry) => entry.minY)) - 32,
             maxX: Math.max(...bounds.map((entry) => entry.maxX)) + 32,
             maxY: Math.max(...bounds.map((entry) => entry.maxY)) + 32,
         }
+    }
+
+    objectCanvasBounds(object, objects = this.snapshot.objects) {
+        const anchor = this.projectToCanvasPoint(worldPosition(objects, object))
+        if (!isSpatialGroup(object)) {
+            const local = this.rendererRegistry.bounds(object)
+            return { minX: anchor.x + local.minX, minY: anchor.y + local.minY, maxX: anchor.x + local.maxX, maxY: anchor.y + local.maxY }
+        }
+        const radius = POINT_RADIUS_PX / this.scale
+        const bounds = [{ minX: anchor.x - radius, minY: anchor.y - radius, maxX: anchor.x + radius, maxY: anchor.y + radius }]
+        const descendants = spatialDescendants(objects, object)
+        for (const child of objects) {
+            if (child.editorId === object.editorId || !descendants.has(child.editorId)) continue
+            if (!isSpatialGroup(child)) bounds.push(this.objectCanvasBounds(child, objects))
+            else {
+                const point = this.projectToCanvasPoint(worldPosition(objects, child))
+                bounds.push({ minX: point.x - radius, minY: point.y - radius, maxX: point.x + radius, maxY: point.y + radius })
+            }
+        }
+        return { minX: Math.min(...bounds.map((b) => b.minX)), minY: Math.min(...bounds.map((b) => b.minY)), maxX: Math.max(...bounds.map((b) => b.maxX)), maxY: Math.max(...bounds.map((b) => b.maxY)) }
+    }
+
+    objectLocalCanvasBounds(object) {
+        const bounds = this.objectCanvasBounds(object)
+        const anchor = this.projectToCanvasPoint(worldPosition(this.snapshot.objects, object))
+        return { minX: bounds.minX - anchor.x, minY: bounds.minY - anchor.y, maxX: bounds.maxX - anchor.x, maxY: bounds.maxY - anchor.y }
     }
 
     _constrainPosition() {}
@@ -1423,7 +1548,11 @@ export class ViewWorld extends ViewCanvasBase {
             maxY: (this.canvas.height - this.offsetY) / this.scale,
         }
         snapshot.objects.forEach((object, index) => {
-            const anchor = this.projectToCanvasPoint(object)
+            if (isSpatialGroup(object)) {
+                this.drawSelection(ctx, object, false)
+                return
+            }
+            const anchor = this.projectToCanvasPoint(worldPosition(this.snapshot.objects, object))
             ctx.save()
             ctx.translate(anchor.x - object.x, anchor.y - object.y)
             try {
@@ -1445,16 +1574,16 @@ export class ViewWorld extends ViewCanvasBase {
         if (selected) this.drawSelection(ctx, selected)
     }
 
-    drawSelection(ctx, object) {
+    drawSelection(ctx, object, selected = true) {
         assert(
             this.rendererRegistry instanceof WorldObjectRendererRegistry,
             "view-world selection requires initialized renderers",
         )
-        const bounds = this.rendererRegistry.bounds(object)
-        const anchor = this.projectToCanvasPoint(object)
+        const bounds = this.objectLocalCanvasBounds(object)
+        const anchor = this.projectToCanvasPoint(worldPosition(this.snapshot.objects, object))
         ctx.save()
-        ctx.strokeStyle = "#ffcc66"
-        ctx.lineWidth = 2 / this.scale
+        ctx.strokeStyle = selected ? "#ffcc66" : "rgba(122,162,255,0.65)"
+        ctx.lineWidth = (selected ? 2 : 1) / this.scale
         ctx.strokeRect(
             anchor.x + bounds.minX,
             anchor.y + bounds.minY,
@@ -1533,9 +1662,11 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     objectTooltipContent(object) {
+        const position = worldPosition(this.state.objects, object)
+        const prefix = `${isSpatialGroup(object) ? "Group" : "Object"} world: ${position.x}, ${position.y}; local: ${object.x}, ${object.y}\n`
         const entries = Object.entries(object.props)
-        if (entries.length === 0) return "No properties"
-        return entries
+        if (entries.length === 0) return prefix + "No properties"
+        return prefix + entries
             .slice(0, 10)
             .map(([key, value]) => {
                 const cleanKey = key.replaceAll("\n", " ↵ ")
@@ -1551,8 +1682,8 @@ export class ViewWorld extends ViewCanvasBase {
             this.rendererRegistry instanceof WorldObjectRendererRegistry,
             "view-world tooltip requires initialized renderers",
         )
-        const bounds = this.rendererRegistry.bounds(object)
-        const anchor = this.projectToCanvasPoint(object)
+        const bounds = this.objectLocalCanvasBounds(object)
+        const anchor = this.projectToCanvasPoint(worldPosition(this.snapshot.objects, object))
         const rect = this.canvas.getBoundingClientRect()
         const scaleX = rect.width / Math.max(1, this.canvas.width)
         const scaleY = rect.height / Math.max(1, this.canvas.height)
@@ -1612,18 +1743,21 @@ export class ViewWorld extends ViewCanvasBase {
         )
         const anchorRadius = HIT_RADIUS_PX / this.scale
         const anchorRadiusSquared = anchorRadius * anchorRadius
-        for (let index = this.state.objects.length - 1; index >= 0; index--) {
-            const object = this.state.objects[index]
+        const ordered = this.state.objects.toReversed()
+        const selected = ordered.find((object) => object.editorId === this.state.activeObjectId && isSpatialGroup(object))
+        if (selected) ordered.unshift(...ordered.splice(ordered.indexOf(selected), 1))
+        for (const object of ordered) {
             if (objectLocked(object)) continue
-            const bounds = this.rendererRegistry.bounds(object)
+            const bounds = this.objectLocalCanvasBounds(object)
             const canvasPoint = this.projectToCanvasPoint(point)
-            const anchor = this.projectToCanvasPoint(object)
+            const anchor = this.projectToCanvasPoint(worldPosition(this.snapshot.objects, object))
             const localX = canvasPoint.x - anchor.x
             const localY = canvasPoint.y - anchor.y
             const insideBounds =
                 localX >= bounds.minX && localX <= bounds.maxX && localY >= bounds.minY && localY <= bounds.maxY
             const insideAnchor = localX * localX + localY * localY <= anchorRadiusSquared
-            if (insideBounds || insideAnchor) return object
+            const nearEdge = Math.min(Math.abs(localX - bounds.minX), Math.abs(localX - bounds.maxX), Math.abs(localY - bounds.minY), Math.abs(localY - bounds.maxY)) <= 4 / this.scale
+            if (insideAnchor || (insideBounds && (!isSpatialGroup(object) || nearEdge))) return object
         }
         return null
     }
