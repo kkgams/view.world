@@ -11,13 +11,15 @@ World editing with configurable object renderers for [GAMS](https://github.com/k
 Requires Make, Node.js 24 (dependency-free syntax checks), Python 3, curl, unzip,
 zip and shasum. Local launch requires macOS Apple Silicon and network access on
 first use. It loads canonical local source and pinned released supporting Units,
-not neighboring checkouts. Use New or Open to load a world. The local Project
-uses the built-in point renderer; additional renderers must be configured explicitly.
+not neighboring checkouts. Use New or Open to load a world. The local Project configures rectangle, sprite
+and tilemap renderers; unmatched objects use the built-in point renderer.
 
 | Command | Purpose |
 | --- | --- |
-| `make open` | Download the released Host if absent, then open local `gams.json`. |
-| `make check` | Check JavaScript syntax. |
+| `make build` | Assemble the View and its renderer registry into one Host-loadable module. |
+| `make open` | Build, download the released Host if absent, then open local `gams.json`. |
+| `make check` | Check canonical and assembled JavaScript syntax. |
+| `make test` | Run native renderer and registry tests. |
 | `make package` | Build `build.nosync/view.world.zip` and `SHA256SUMS`. |
 | `make serve-docs DOCS_PORT=8080` | Preview documentation with pinned wiki v1.4.0. |
 | `make validate-docs` | Validate documentation. |
@@ -26,4 +28,6 @@ uses the built-in point renderer; additional renderers must be configured explic
 
 Existing Host downloads are never updated implicitly; launch does not bypass
 Gatekeeper. Optional user inputs in `dev-assets/` are neither packaged nor cleaned.
-See [runtime requirements](docs/index.md#runtime-requirements).
+The ZIP includes `views/view-world.js` and `world-renderers/{rectangle,sprite,tilemap}.js`.
+Projects select renderer modules through `$file` archive entries in
+`ui.views.view-world.config.renderers`; see [renderer configuration](docs/index.md#renderer-configuration).

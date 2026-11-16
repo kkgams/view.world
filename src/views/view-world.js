@@ -1,7 +1,7 @@
 import { runtime, unwrap } from "/core/runtime.js"
 import { UndoHistory } from "/util/undo.js"
 import { ViewCanvasBase } from "/util/view-canvas-base.js"
-import { WorldObjectRendererRegistry } from "/util/world-object-renderers.js"
+import { WorldObjectRendererRegistry } from "../world-object-renderers.js"
 
 const GRID_SIZE = 16
 const POINT_RADIUS_PX = 6

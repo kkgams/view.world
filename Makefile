@@ -2,7 +2,9 @@
 .DELETE_ON_ERROR:
 ARCHIVE := build.nosync/view.world.zip
 NOTICE_FILES := LICENSE NOTICE
-SOURCE := src/views/view-world.js
+VIEW_SOURCES := src/views/view-world.js src/world-object-renderers.js
+RENDERERS := $(wildcard src/world-renderers/*.js)
+VIEW := build.nosync/views/view-world.js
 export TMPDIR := $(abspath build.nosync/tmp)
 export PYTHONPYCACHEPREFIX := $(abspath build.nosync/pycache)
 PYTHON ?= python3
@@ -17,10 +19,18 @@ WIKI_REPOSITORY := https://github.com/justgook/wiki
 WIKI_MAKEFILE := build.nosync/wiki-$(WIKI_VERSION).mk
 WIKI_ENGINE := $(abspath build.nosync/wiki-$(WIKI_VERSION))
 
-.PHONY: open check docs serve-docs validate-docs package clean
+.PHONY: build open check test docs serve-docs validate-docs package clean
 
-check:
-	$(NODE) --check $(SOURCE)
+build: $(VIEW)
+
+$(VIEW): $(VIEW_SOURCES) scripts/assemble.py Makefile | build.nosync/tmp
+	$(PYTHON) -B scripts/assemble.py
+
+check: build
+	@for source in $(VIEW_SOURCES) $(RENDERERS) $(VIEW); do $(NODE) --input-type=module --check < "$$source" || exit; done
+
+test:
+	$(NODE) --test test/*.test.mjs
 
 # Retain an existing app; never update it implicitly.
 tools/gams.app: | build.nosync/tmp
@@ -43,7 +53,7 @@ tools/gams.app: | build.nosync/tmp
 		mv "$$stage/unpacked" tools/gams-release-notices; \
 		mv "$$stage/GAMS.app" "$@"
 
-open: tools/gams.app
+open: build tools/gams.app
 	GAMS_APP_CWD="$(CURDIR)" GAMS_CONFIG="gams.json" ./tools/gams.app/Contents/MacOS/gams
 
 build.nosync/tmp:
@@ -60,9 +70,10 @@ docs serve-docs validate-docs: $(WIKI_MAKEFILE) | build.nosync/tmp
 
 package: build.nosync/SHA256SUMS $(ARCHIVE)
 
-$(ARCHIVE): $(SOURCE) $(NOTICE_FILES) Makefile | build.nosync/tmp
+$(ARCHIVE): $(VIEW) $(RENDERERS) $(NOTICE_FILES) Makefile src/world-renderers | build.nosync/tmp
 	rm -f "$@"
-	cd src && zip -q -X "../$@" views/view-world.js
+	cd build.nosync && zip -q -X "$(notdir $@)" views/view-world.js
+	cd src && zip -q -X "../$@" $(patsubst src/%,%,$(RENDERERS))
 	zip -q -X "$@" $(NOTICE_FILES)
 
 build.nosync/SHA256SUMS: $(ARCHIVE)

@@ -72,11 +72,48 @@
     },
     "views": {
       "view-world": {
-        "url": "src/views/view-world.js",
+        "url": "build.nosync/views/view-world.js",
         "label": "view-world",
         "internal": false,
         "config": {
-          "renderers": {},
+          "renderers": {
+            "rectangle": {
+              "url": "src/world-renderers/rectangle.js",
+              "match": {
+                "render": "rectangle"
+              },
+              "config": {
+                "origin": [
+                  0,
+                  0
+                ]
+              }
+            },
+            "sprite": {
+              "url": "src/world-renderers/sprite.js",
+              "match": {
+                "render": "sprite"
+              },
+              "config": {
+                "origin": [
+                  0.5,
+                  0.5
+                ]
+              }
+            },
+            "tilemap": {
+              "url": "src/world-renderers/tilemap.js",
+              "match": {
+                "render": "tilemap"
+              },
+              "config": {
+                "origin": [
+                  0,
+                  1
+                ]
+              }
+            }
+          },
           "inputs": {},
           "invert": {
             "x": false,
