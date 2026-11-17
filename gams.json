@@ -104,6 +104,11 @@
                 "origin": [0, 1]
               }
             },
+            "text": {
+              "url": "build.nosync/world-renderers/text.js",
+              "match": { "render": "text" },
+              "config": { "origin": [0, 0] }
+            },
             "nine": {
               "url": "src/world-renderers/nine.js",
               "match": {

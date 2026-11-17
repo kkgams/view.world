@@ -2,7 +2,9 @@ World View
 GAMS-authored contributions are licensed under Apache-2.0; see LICENSE.
 This does not relicense third-party code or assets.
 
-The selected View source contains no identified vendored third-party
-implementation. This bounded source scan is not an authorship certificate.
+The text distance-field shaders are adapted from Viktor Chlumsky's
+web/font-renderer-core.js, MIT License, Copyright (c) 2020 - 2025 Viktor Chlumsky.
+The complete MIT permission and warranty notice is retained in the distributed
+world-renderers/text.js source.
 Absolute /core/, /util/ and /widgets/ imports are Host-provided runtime
 APIs; their implementations are not bundled in the View ZIP.

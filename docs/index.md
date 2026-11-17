@@ -151,12 +151,14 @@ into the controller. Options:
 
 ## Renderer configuration
 
-The ZIP contains `views/view-world.js` (including the registry) and four separate
+The ZIP contains `views/view-world.js` (including the registry) and five separate
 browser modules under `world-renderers/`. They are not WASM plugins or a separate
 Project Unit category. Projects explicitly select modules in
 `ui.views.view-world.config.renderers`; there is no automatic discovery.
 
-The local Project uses canonical renderer files under `src/world-renderers/`.
+The local Project uses canonical renderer files under `src/world-renderers/`,
+except text, which Make assembles with its layout and GPU helpers into
+`build.nosync/world-renderers/text.js` for the Host blob loader.
 A consuming Project can select a renderer from the same released ZIP as the View:
 
 ```json
@@ -193,9 +195,10 @@ The View exposes those authored properties as `object.props` to renderers.
 | `rectangle.js` / `render: "rectangle"` | Positive `width`, `height`; CSS `color`. | None. |
 | `sprite.js` / `render: "sprite"` | `url` for a Project image, or `width`, `height`, `color` for a rectangle. | Paired `width`/`height` override natural image size. QOI, PNG, JPEG, WebP, GIF and BMP are supported. |
 | `nine.js` / `render: "nine"` | `nine`: Project-relative JSON path; `slice`: exact slice name; positive `width`, `height`. | None. |
+| `text.js` / `render: "text"` | `font`: Project-relative linked font JSON; `text`: string; positive `fontSize`; hex `color`. | None. |
 | `tilemap.js` / `render: "tilemap"` | `tilemap`: Project-relative tilemap path. | Positive one-based `layer`; `repeat: [x, y]` with 0/1 flags for infinite viewport repetition. |
 
-All four accept `config.origin: [x, y]`, normalized from 0 to 1; omission means
+All five accept `config.origin: [x, y]`, normalized from 0 to 1; omission means
 top-left `[0, 0]`. The local Project uses top-left rectangles, centered sprites
 and bottom-left tilemaps. Repeated tilemaps retain one copy's finite bounds for
 selection and fit-to-content.
@@ -285,6 +288,66 @@ Horizontal/vertical slices stretch only their active axis in three parts; the
 other axis always retains its source size. A plain region draws at its source
 size and can move but cannot resize. Drawing uses nearest-neighbor sampling;
 no tiling mode is added. Renderer `config.origin` controls destination bounds as for sprites.
+
+## Text objects
+
+Text is an independently selectable renderer, not a special World object type.
+Enable `world-renderers/text.js` with `match: { "render": "text" }` using the
+same explicit module configuration as other renderers. Omitting it omits its
+sidebar panel; arbitrary World properties and game-pipeline policy are unchanged.
+
+1. Generate an atlas in view-font (`plugin.font`). Set its **Atlas Project path**,
+   download the linked font JSON and atlas PNG, and place both inside the Project.
+2. In World's **Text** panel choose **Import font JSON** and select the JSON.
+3. Enter multiline Text, positive Font size and Color (`#RRGGBB` or `#RRGGBBAA`).
+4. Choose **Add text object** to place it at viewport center as one undoable action.
+
+```json
+{
+  "x": 100,
+  "y": 50,
+  "render": "text",
+  "font": "fonts/interface.font.json",
+  "text": "Beware below\nMind the gap",
+  "fontSize": 24,
+  "color": "#ffffff"
+}
+```
+
+Use Properties to change these fields. Existing movement, spatial parenting,
+reorder, delete, Save/Open and Undo/Redo apply. Parent a border and its text to the
+same spatial group to move them together; no attachment, clipping or layout is
+implied. Labels and author comments are ordinary objects: pipelines decide which
+to keep. The renderer does not interpret purpose/comment flags.
+
+The linked JSON is `format: "gams.font"`, `version: 1`, `image`, and the existing
+font export's `atlas`, `metrics`, `glyphs` and `kerning`. `image` is a
+**Project-relative** PNG path, not relative to the JSON. Raw metadata JSON from
+older exports has no linked image and is rejected. Assets are referenced, never
+copied; keep both files with the Project. Reopen the Project after external font
+edits because prepared documents/images are cached while referenced.
+
+The version-1 reader accepts SDF, PSDF, MSDF and MTSDF with positive atlas size and
+distance range, zero `distanceRangeMiddle` and bottom-origin atlas bounds. PNG rows
+are top-down; decoding disables alpha premultiplication and color conversion to
+preserve distance channels, including MTSDF RGB beneath zero alpha. Glyph bounds,
+advances, kerning and line metrics use font units; Font size is world units per em
+(`fontSize / metrics.emSize` scales those metrics). Explicit newlines advance by
+`metrics.lineHeight`; CRLF is treated as one newline. Missing glyphs, malformed
+Unicode or metadata, out-of-atlas bounds and image-size mismatches are errors.
+
+Text uses left-aligned line boxes, including spaces and blank lines, expanded to
+include glyph overhangs. `config.origin` anchors this complete measured box;
+default `[0, 0]` is top-left. Empty/whitespace-only text retains positive selection
+bounds even without visible glyphs. No resize handles are provided: change
+`fontSize` through Properties. There is no wrapping, complex-script shaping,
+font fallback, outline, shadow or `.arfont` loader in this implementation.
+
+A transparent offscreen WebGL2 canvas renders distance fields at the current 2D
+canvas transform scale, then composites into World without changing object order.
+WebGL2 is required for visible text; unavailable/lost contexts and oversized
+textures/text surfaces fail explicitly. Resources are released on eviction and
+disposal. This does not introduce a WebGL requirement for Projects without text.
 
 ## Resize objects
 

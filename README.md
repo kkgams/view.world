@@ -11,8 +11,8 @@ World editing with configurable object renderers for [GAMS](https://github.com/k
 Requires Make, Node.js 24 (dependency-free syntax checks), Python 3, curl, unzip,
 zip and shasum. Local launch requires macOS Apple Silicon and network access on
 first use. It loads canonical local source and pinned released supporting Units,
-not neighboring checkouts. Use New or Open to load a world. The local Project configures rectangle, sprite, tilemap
-and nine-slice renderers; unmatched objects use the built-in point renderer.
+not neighboring checkouts. Use New or Open to load a world. The local Project configures rectangle, sprite, tilemap,
+nine-slice and text renderers; unmatched objects use the built-in point renderer.
 
 | Command | Purpose |
 | --- | --- |
@@ -28,7 +28,7 @@ and nine-slice renderers; unmatched objects use the built-in point renderer.
 
 Existing Host downloads are never updated implicitly; launch does not bypass
 Gatekeeper. Optional user inputs in `dev-assets/` are neither packaged nor cleaned.
-The ZIP includes `views/view-world.js` and `world-renderers/{rectangle,sprite,tilemap,nine}.js`.
+The ZIP includes `views/view-world.js` and `world-renderers/{rectangle,sprite,tilemap,nine,text}.js`.
 Projects select renderer modules through `$file` archive entries in
 `ui.views.view-world.config.renderers`; see [renderer configuration](docs/index.md#renderer-configuration).
 
@@ -53,6 +53,21 @@ Corners keep their source size and edges/center stretch. Each patch provides
 minimum dimensions from its fixed borders; smaller sizes are rejected rather
 than scaling those borders. Regions stay at their source size; horizontal and
 vertical slices resize only along their stretch axis. See [nine-slice rendering](docs/index.md#nine-slice-objects).
+
+## Text objects
+
+Enable the optional text renderer, then use **Import font JSON** in its **Text**
+panel. Select a `gams.font` version-1 JSON exported by view-font in `plugin.font`,
+enter multiline Text, Font size and Color (`#RRGGBB` or `#RRGGBBAA`), then choose
+**Add text object**. JSON and its linked PNG must already be inside the Project;
+the image path is Project-relative. Use Properties to edit existing text.
+
+Text has measured bounds, kerning and scale-aware distance-field rendering through
+WebGL2, composited into World's 2D canvas. It moves and groups like other objects;
+there is no wrapping, shaping, resize handle or automatic border attachment.
+Missing glyphs are errors. World stores properties without deciding whether a
+label or comment belongs in the game. `.arfont` loading is not implemented yet.
+See [text rendering](docs/index.md#text-objects).
 
 ## Resize objects
 

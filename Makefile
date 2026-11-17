@@ -3,7 +3,9 @@
 ARCHIVE := build.nosync/view.world.zip
 NOTICE_FILES := LICENSE NOTICE
 VIEW_SOURCES := src/views/view-world.js src/world-object-renderers.js src/spatial.mjs src/drag-drop.mjs src/resize.mjs
-RENDERERS := $(wildcard src/world-renderers/*.js)
+RENDERERS := $(filter-out src/world-renderers/text.js,$(wildcard src/world-renderers/*.js))
+TEXT_SOURCES := src/world-renderers/text.js src/text-model.js src/text-raster.js
+TEXT_RENDERER := build.nosync/world-renderers/text.js
 VIEW := build.nosync/views/view-world.js
 export TMPDIR := $(abspath build.nosync/tmp)
 export PYTHONPYCACHEPREFIX := $(abspath build.nosync/pycache)
@@ -21,13 +23,16 @@ WIKI_ENGINE := $(abspath build.nosync/wiki-$(WIKI_VERSION))
 
 .PHONY: build open check test docs serve-docs validate-docs package clean
 
-build: $(VIEW)
+build: $(VIEW) $(TEXT_RENDERER)
+
+$(TEXT_RENDERER): $(TEXT_SOURCES) scripts/assemble-text.py Makefile | build.nosync/tmp
+	$(PYTHON) -B scripts/assemble-text.py
 
 $(VIEW): $(VIEW_SOURCES) scripts/assemble.py Makefile | build.nosync/tmp
 	$(PYTHON) -B scripts/assemble.py
 
 check: build
-	@for source in $(VIEW_SOURCES) $(RENDERERS) $(VIEW); do $(NODE) --input-type=module --check < "$$source" || exit; done
+	@for source in $(VIEW_SOURCES) $(RENDERERS) $(TEXT_SOURCES) $(VIEW) $(TEXT_RENDERER); do $(NODE) --input-type=module --check < "$$source" || exit; done
 
 test:
 	$(NODE) --test test/*.test.mjs
@@ -70,9 +75,9 @@ docs serve-docs validate-docs: $(WIKI_MAKEFILE) | build.nosync/tmp
 
 package: build.nosync/SHA256SUMS $(ARCHIVE)
 
-$(ARCHIVE): $(VIEW) $(RENDERERS) $(NOTICE_FILES) Makefile src/world-renderers | build.nosync/tmp
+$(ARCHIVE): $(VIEW) $(RENDERERS) $(TEXT_RENDERER) $(NOTICE_FILES) Makefile src/world-renderers | build.nosync/tmp
 	rm -f "$@"
-	cd build.nosync && zip -q -X "$(notdir $@)" views/view-world.js
+	cd build.nosync && zip -q -X "$(notdir $@)" views/view-world.js world-renderers/text.js
 	cd src && zip -q -X "../$@" $(patsubst src/%,%,$(RENDERERS))
 	zip -q -X "$@" $(NOTICE_FILES)
 
