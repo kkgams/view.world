@@ -61,6 +61,8 @@ panel. Select a `gams.font` version-1 JSON exported by view-font in `plugin.font
 enter multiline Text, Font size and Color (`#RRGGBB` or `#RRGGBBAA`), then choose
 **Add text object**. JSON and its linked PNG must already be inside the Project;
 the image path is Project-relative. Use Properties to edit existing text.
+A ready-to-import font is included at `examples/world-example.font.json`;
+see [example font and license](examples/README.md).
 
 Text has measured bounds, kerning and scale-aware distance-field rendering through
 WebGL2, composited into World's 2D canvas. It moves and groups like other objects;

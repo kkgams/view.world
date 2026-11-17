@@ -130,3 +130,20 @@ test("invalid object data and configs fail explicitly", async () => {
   await r.prepare([obj()]); assert.deepEqual(r.bounds(obj()), { minX: -12, minY: -26, maxX: 12, maxY: 0 })
   r.dispose(); f.renderer.dispose()
 })
+
+test("included example font has linked RGBA PNG, printable ASCII and usable text layout", async () => {
+  const root = new URL("../", import.meta.url)
+  const document = model.validateFontDocument(JSON.parse(await readFile(new URL("examples/world-example.font.json", root), "utf8")))
+  assert.equal(document.image, "examples/world-example.png")
+  assert.equal(document.atlas.type, "mtsdf")
+  assert.deepEqual(document.glyphs.map(g => g.unicode).sort((a, b) => a - b), Array.from({ length: 95 }, (_, i) => i + 32))
+  const png = await readFile(new URL(document.image, root))
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10])
+  assert.equal(png.readUInt32BE(16), document.atlas.width)
+  assert.equal(png.readUInt32BE(20), document.atlas.height)
+  assert.equal(png[24], 8)
+  assert.equal(png[25], 6) // RGBA: preserve all four MTSDF distance channels.
+  const layout = model.layoutWorldText(document, "Paused\nResume game - 123!", 24)
+  assert.equal(layout.quads.length, 21)
+  assert(layout.bounds.maxX > 0 && layout.bounds.maxY > 24)
+})
