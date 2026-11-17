@@ -37,8 +37,8 @@
     }
   },
   {
-    "x": 61,
-    "y": -711,
+    "x": 76,
+    "y": -695,
     "name": "Selected item",
     "render": "nine",
     "nine": "examples/pause.slice.json",
@@ -61,6 +61,34 @@
     "height": 119,
     "spatial": {
       "id": "pause-item",
+      "parent": "pause-menu"
+    }
+  },
+  {
+    "x": 224,
+    "y": -656,
+    "font": "examples/world-example.arfont",
+    "text": "Continue",
+    "fontSize": 48,
+    "color": "#ffffff",
+    "render": "text",
+    "name": "Text Continue",
+    "spatial": {
+      "id": "group-1",
+      "parent": "pause-menu"
+    }
+  },
+  {
+    "x": 274,
+    "y": -505,
+    "font": "examples/world-example.arfont",
+    "text": "Quit",
+    "fontSize": 48,
+    "color": "#ffffff",
+    "render": "text",
+    "name": "Text Quit",
+    "spatial": {
+      "id": "group-2",
       "parent": "pause-menu"
     }
   }
