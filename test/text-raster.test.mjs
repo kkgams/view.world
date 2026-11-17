@@ -43,8 +43,8 @@ function environment(options = {}) {
         getTransform() { return { a: 0, b: 2, c: -3, d: 0 } },
         drawImage(...args) { calls.push(["drawImage", ...args]) },
     }
-    const layout = { bounds: { minX: -2, minY: 4, maxX: 8, maxY: 24 }, quads: [{ x: -1, y: 6, width: 3, height: 5, uv: [0.1, 0.2, 0.3, 0.4] }] }
-    const font = { document: { atlas: { width: 100, height: 200, distanceRange: 4, type: "mtsdf" } }, image: { width: 100, height: 200 } }
+    const layout = { bounds: { minX: -2, minY: 4, maxX: 8, maxY: 24 }, quads: [{ x: -1, y: 6, width: 3, height: 5, uv: [0.1, 0.8, 0.3, -0.4] }] }
+    const font = { document: { atlas: { width: 100, height: 200, distanceRange: 4, type: "mtsdf" } }, pixels: new Uint8Array(100 * 200 * 4), channels: 4 }
     const color = [0.2, 0.4, 0.6, 0.8]
     const raster = createTextRaster()
     return { calls, listeners, ctx, layout, font, color, raster, canvas }
@@ -52,7 +52,7 @@ function environment(options = {}) {
 
 function draw(env) { env.raster.draw(env.ctx, env.layout, env.font, env.color) }
 
-test("raster uses transformed axis lengths, top-left quads, unchanged top-down UVs and world bounds", () => {
+test("raster uses transformed axis lengths, top-left quads, unchanged bottom-up UVs and world bounds", () => {
     const env = environment()
     draw(env)
     assert.equal(env.canvas.width, 20)
@@ -65,17 +65,35 @@ test("raster uses transformed axis lengths, top-left quads, unchanged top-down U
     env.raster.dispose()
 })
 
-test("one texture is reused, replacing the image uploads without allocating another texture", () => {
+test("one texture is reused and raw pixels identity controls uploads", () => {
     const env = environment()
     draw(env)
     draw(env)
-    env.font.image = { width: 100, height: 200 }
+    env.font = { ...env.font }
+    draw(env)
+    env.font.pixels = new Uint8Array(env.font.pixels)
     env.font.document.atlas.type = "sdf"
     draw(env)
     assert.equal(env.calls.filter(call => call[0] === "createTexture").length, 1)
     assert.equal(env.calls.filter(call => call[0] === "texImage2D").length, 2)
     assert.deepEqual(env.calls.filter(call => call[1] === "multichannel").at(-1), ["uniform1i", "multichannel", 0])
     env.raster.dispose()
+})
+
+test("raw atlas uploads use sized formats, alignment one, no flip or premultiplication", () => {
+    for (const [channels, type, format, internal] of [[1, "sdf", "RED", "R8"], [3, "msdf", "RGB", "RGB8"], [4, "mtsdf", "RGBA", "RGBA8"]]) {
+        const env = environment()
+        env.font.channels = channels
+        env.font.document.atlas.type = type
+        env.font.pixels = new Uint8Array(100 * 200 * channels)
+        draw(env)
+        assert.deepEqual(env.calls.find(call => call[0] === "texImage2D"), ["texImage2D", "TEXTURE_2D", 0, internal, 100, 200, 0, format, "UNSIGNED_BYTE", env.font.pixels])
+        assert(env.calls.some(call => call[0] === "pixelStorei" && call[1] === "UNPACK_ALIGNMENT" && call[2] === 1))
+        for (const parameter of ["UNPACK_FLIP_Y_WEBGL", "UNPACK_PREMULTIPLY_ALPHA_WEBGL"]) {
+            assert(env.calls.filter(call => call[0] === "pixelStorei" && call[1] === parameter).every(call => !call[2]))
+        }
+        env.raster.dispose()
+    }
 })
 
 test("empty layouts do not allocate GPU resources", () => {
@@ -90,7 +108,7 @@ test("oversized raster and atlas are rejected before upload or drawing", () => {
     for (const kind of ["raster", "atlas"]) {
         const env = environment()
         if (kind === "raster") env.layout.bounds.maxX = 10000
-        else { env.font.image.width = 5000; env.font.document.atlas.width = 5000 }
+        else { env.font.document.atlas.width = 5000; env.font.pixels = new Uint8Array(5000 * 200 * 4) }
         assert.throws(() => draw(env), /exceed.*WebGL/)
         assert.equal(env.calls.filter(call => call[0] === "texImage2D").length, 0)
         env.raster.dispose()

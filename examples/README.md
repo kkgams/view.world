@@ -1,12 +1,12 @@
 # Example font
 
-Import `examples/world-example.font.json` from World's **Text** panel. Its linked
-atlas is `examples/world-example.png`; keep both files at these Project paths.
+Import `examples/world-example.arfont` from World's **Text** panel. This single
+Artery file contains the font metadata and atlas pixels.
 The font covers printable ASCII (U+0020–U+007E), including spaces, digits and
 punctuation. Try `Paused`, `Resume game` or multiline world comments.
 
 This MTSDF atlas was generated from **Press Start 2P Regular**, by The Press Start
-2P Project Authors, using the `plugin.font` backend and linked JSON/PNG exporter:
+2P Project Authors, using the `plugin.font` backend and Artery encoder:
 32-pixel atlas size, 4-pixel distance range, ink-trap edge coloring and miter limit
 1. Display size is chosen with the text object's `fontSize` property.
 

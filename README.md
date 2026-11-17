@@ -56,19 +56,20 @@ vertical slices resize only along their stretch axis. See [nine-slice rendering]
 
 ## Text objects
 
-Enable the optional text renderer, then use **Import font JSON** in its **Text**
-panel. Select a `gams.font` version-1 JSON exported by view-font in `plugin.font`,
-enter multiline Text, Font size and Color (`#RRGGBB` or `#RRGGBBAA`), then choose
-**Add text object**. JSON and its linked PNG must already be inside the Project;
-the image path is Project-relative. Use Properties to edit existing text.
-A ready-to-import font is included at `examples/world-example.font.json`;
+Enable the optional text renderer and load `plugin.font` (the local Project pins
+v0.1.1). Use **Import Artery font** in its **Text** panel to select an `.arfont`
+saved by view-font, enter multiline Text, Font size and Color (`#RRGGBB` or
+`#RRGGBBAA`), then choose **Add text object**. The single font file must already
+be inside the Project. Use Properties to edit existing text.
+A ready-to-import font is included at `examples/world-example.arfont`;
 see [example font and license](examples/README.md).
 
 Text has measured bounds, kerning and scale-aware distance-field rendering through
 WebGL2, composited into World's 2D canvas. It moves and groups like other objects;
 there is no wrapping, shaping, resize handle or automatic border attachment.
 Missing glyphs are errors. World stores properties without deciding whether a
-label or comment belongs in the game. `.arfont` loading is not implemented yet.
+label or comment belongs in the game. JSON/PNG font loading is not supported;
+existing text objects must reference an `.arfont` instead.
 See [text rendering](docs/index.md#text-objects).
 
 ## Resize objects

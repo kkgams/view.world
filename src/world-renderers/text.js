@@ -6,23 +6,38 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-export async function readFontDocument(path) {
+export async function readFont(path) {
   fontProjectPath(path)
-  return validateFontDocument(JSON.parse(unwrap(await runtime.invoke("fs/fs::read-text", path))))
-}
-
-async function loadFontImage(doc) {
-  const bytes = new Uint8Array(unwrap(await runtime.invoke("fs/fs::read-file", doc.image)))
-  const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }), {
-    premultiplyAlpha: "none", colorSpaceConversion: "none", imageOrientation: "none",
-  })
+  const bytes = unwrap(await runtime.invoke("fs/fs::read-file", path))
+  assert(Array.isArray(bytes) && bytes.length <= 64 * 1024 * 1024 &&
+    bytes.every(value => Number.isInteger(value) && value >= 0 && value <= 255), "Invalid font file bytes or input exceeds 64 MiB")
+  const decoded = await runtime.invoke("font/font::decode", bytes)
+  assert(decoded && typeof decoded === "object" &&
+    (Object.hasOwn(decoded, "ok") !== Object.hasOwn(decoded, "err")), "Malformed font decode result")
+  if (Object.hasOwn(decoded, "err")) {
+    assert(decoded.err && typeof decoded.err.code === "string" && typeof decoded.err.message === "string", "Malformed font decode error")
+    throw new Error(`${decoded.err.code}: ${decoded.err.message}`)
+  }
+  const resource = unwrap(decoded)
+  assert(resource && typeof resource.$resource === "string" && typeof resource.id === "string", "Expected an owned font resource")
   try {
-    assert(image.width === doc.atlas.width && image.height === doc.atlas.height,
-      `Font atlas dimensions disagree with metadata: ${doc.image}`)
-    return image
-  } catch (error) {
-    image.close()
-    throw error
+    const info = await runtime.invoke("font/font::atlas-info", resource)
+    const pixels = await runtime.invoke("font/font::atlas-pixels", resource)
+    const metadata = await runtime.invoke("font/font::metadata-json", resource)
+    assert(typeof metadata === "string", "Expected font metadata JSON")
+    const document = validateFontDocument(JSON.parse(metadata))
+    const a = document.atlas
+    assert(info && info.dimensions && info.dimensions.width === a.width && info.dimensions.height === a.height,
+      "Font atlas dimensions disagree with metadata")
+    assert(info["atlas-type"] === a.type && info.size === a.size && info["distance-range"] === a.distanceRange,
+      "Font atlas type or scale disagrees with metadata")
+    const channels = { r8: 1, rgb8: 3, rgba8: 4 }[info["pixel-format"]]
+    assert(channels === ({ sdf: 1, psdf: 1, msdf: 3, mtsdf: 4 }[a.type]), "Unsupported font atlas pixel format")
+    assert(Array.isArray(pixels) && pixels.length === a.width * a.height * channels &&
+      pixels.every(value => Number.isInteger(value) && value >= 0 && value <= 255), "Font atlas pixel length or bytes are invalid")
+    return { document, pixels: new Uint8Array(pixels), channels }
+  } finally {
+    await runtime.releaseResource(resource)
   }
 }
 
@@ -52,7 +67,7 @@ export function createWorldObjectRenderer({ config }) {
       }
       const exact = { autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false" }
       const element = node("fieldset", { "data-element": "text-renderer" })
-      const choose = node("button", { type: "button", "data-action": "import-font" }, "Import font JSON")
+      const choose = node("button", { type: "button", "data-action": "import-font" }, "Import Artery font")
       const path = node("output", { "data-element": "font-path" }, "No font imported")
       const form = node("form", { "data-element": "text-form" })
       const text = node("textarea", { ...exact, "data-field": "text" })
@@ -82,19 +97,15 @@ export function createWorldObjectRenderer({ config }) {
       function importFont() {
         return perform(async () => {
           const result = unwrap(await runtime.call("ui.popup.open", {
-            title: "Import Font JSON", size: "medium", tag: "view-files",
-            props: { mode: "chooser", filter: "*.json" },
+            title: "Import Artery Font", size: "medium", tag: "view-files",
+            props: { mode: "chooser", filter: "*.arfont" },
           }))
           if (!active || !result || result.cancelled) return
           const selection = Array.isArray(result.selection) ? result.selection[0] : result.selection
           assert(selection && typeof selection.path === "string", "Font import requires selected path")
-          const document = await readFontDocument(selection.path)
+          const font = await readFont(selection.path)
           if (!active) return
-          // Validate the linked image before making this source available to add.
-          const image = await loadFontImage(document)
-          image.close()
-          if (!active) return
-          source = { path: selection.path, document }
+          source = { path: selection.path, document: font.document }
           path.textContent = selection.path
         })
       }
@@ -121,29 +132,18 @@ export function createWorldObjectRenderer({ config }) {
     async prepare(objects) {
       assert(Array.isArray(objects), "text renderer objects must be an array")
       const requested = objects.map(textObjectData), ticket = ++generation
-      const next = new Map(), staged = new Set()
-      try {
-        for (const data of requested) {
-          if (!next.has(data.path)) {
-            let font = fonts.get(data.path)
-            if (!font) {
-              const document = await readFontDocument(data.path)
-              const image = await loadFontImage(document)
-              font = { document, image }; staged.add(font)
-            }
-            next.set(data.path, font)
-          }
-          layoutWorldText(next.get(data.path).document, data.text, data.size, origin)
+      const next = new Map()
+      for (const data of requested) {
+        if (!next.has(data.path)) {
+          const font = fonts.get(data.path) || await readFont(data.path)
+          next.set(data.path, font)
         }
-        assert(ticket === generation, "Text preparation superseded")
-      } catch (error) {
-        for (const font of staged) font.image.close()
-        throw error
+        layoutWorldText(next.get(data.path).document, data.text, data.size, origin)
       }
+      assert(ticket === generation, "Text preparation superseded")
       const evicted = [...fonts].filter(([path]) => !next.has(path))
       // The GPU cache contains at most one atlas. Release any evicted source texture.
       if (evicted.length && raster) { raster.dispose(); raster = null }
-      for (const [, font] of evicted) font.image.close()
       fonts = next
     },
 
@@ -161,7 +161,6 @@ export function createWorldObjectRenderer({ config }) {
     dispose() {
       generation++
       if (raster) { raster.dispose(); raster = null }
-      for (const font of fonts.values()) font.image.close()
       fonts.clear()
     },
   }

@@ -195,7 +195,7 @@ The View exposes those authored properties as `object.props` to renderers.
 | `rectangle.js` / `render: "rectangle"` | Positive `width`, `height`; CSS `color`. | None. |
 | `sprite.js` / `render: "sprite"` | `url` for a Project image, or `width`, `height`, `color` for a rectangle. | Paired `width`/`height` override natural image size. QOI, PNG, JPEG, WebP, GIF and BMP are supported. |
 | `nine.js` / `render: "nine"` | `nine`: Project-relative JSON path; `slice`: exact slice name; positive `width`, `height`. | None. |
-| `text.js` / `render: "text"` | `font`: Project-relative linked font JSON; `text`: string; positive `fontSize`; hex `color`. | None. |
+| `text.js` / `render: "text"` | `font`: Project-relative `.arfont`; `text`: string; positive `fontSize`; hex `color`. | None. |
 | `tilemap.js` / `render: "tilemap"` | `tilemap`: Project-relative tilemap path. | Positive one-based `layer`; `repeat: [x, y]` with 0/1 flags for infinite viewport repetition. |
 
 All five accept `config.origin: [x, y]`, normalized from 0 to 1; omission means
@@ -296,9 +296,16 @@ Enable `world-renderers/text.js` with `match: { "render": "text" }` using the
 same explicit module configuration as other renderers. Omitting it omits its
 sidebar panel; arbitrary World properties and game-pipeline policy are unchanged.
 
-1. Generate an atlas in view-font (`plugin.font`). Set its **Atlas Project path**,
-   download the linked font JSON and atlas PNG, and place both inside the Project.
-2. In World's **Text** panel choose **Import font JSON** and select the JSON.
+Load the released font backend in the Project's `plugins` array (the World
+View ZIP does not bundle it):
+
+```json
+{ "$file": "https://github.com/kkgams/plugin.font/releases/download/v0.1.1/plugin.font.wasm" }
+```
+
+1. Generate an atlas in view-font (`plugin.font`) and **Save** it as an `.arfont`
+   inside the Project.
+2. In World's **Text** panel choose **Import Artery font** and select that file.
 3. Enter multiline Text, positive Font size and Color (`#RRGGBB` or `#RRGGBBAA`).
 4. Choose **Add text object** to place it at viewport center as one undoable action.
 
@@ -307,7 +314,7 @@ sidebar panel; arbitrary World properties and game-pipeline policy are unchanged
   "x": 100,
   "y": 50,
   "render": "text",
-  "font": "fonts/interface.font.json",
+  "font": "fonts/interface.arfont",
   "text": "Beware below\nMind the gap",
   "fontSize": 24,
   "color": "#ffffff"
@@ -320,28 +327,33 @@ same spatial group to move them together; no attachment, clipping or layout is
 implied. Labels and author comments are ordinary objects: pipelines decide which
 to keep. The renderer does not interpret purpose/comment flags.
 
-The linked JSON is `format: "gams.font"`, `version: 1`, `image`, and the existing
-font export's `atlas`, `metrics`, `glyphs` and `kerning`. `image` is a
-**Project-relative** PNG path, not relative to the JSON. Raw metadata JSON from
-older exports has no linked image and is rejected. Assets are referenced, never
-copied; keep both files with the Project. Reopen the Project after external font
-edits because prepared documents/images are cached while referenced.
+The `.arfont` contains atlas pixels, glyphs, kerning and metrics in one file.
+Paths are **Project-relative**. Assets are referenced, never copied. Reopen the
+Project after external font edits because decoded fonts are cached while
+referenced. JSON/PNG font loading has been removed; save an `.arfont` in view-font
+and update existing text objects' `font` paths.
 
-The version-1 reader accepts SDF, PSDF, MSDF and MTSDF with positive atlas size and
-distance range, zero `distanceRangeMiddle` and bottom-origin atlas bounds. PNG rows
-are top-down; decoding disables alpha premultiplication and color conversion to
-preserve distance channels, including MTSDF RGB beneath zero alpha. Glyph bounds,
-advances, kerning and line metrics use font units; Font size is world units per em
-(`fontSize / metrics.emSize` scales those metrics). Explicit newlines advance by
-`metrics.lineHeight`; CRLF is treated as one newline. Missing glyphs, malformed
-Unicode or metadata, out-of-atlas bounds and image-size mismatches are errors.
+The `plugin.font` decoder accepts one float32 Unicode variant and one tightly
+packed, bottom-up raw unsigned 8-bit atlas: SDF/PSDF (one channel), MSDF (three)
+or MTSDF (four). Encoded images, multiple variants/atlases, appendices, vertical
+advances and nonzero `distanceRangeMiddle` are unsupported. Malformed payloads,
+checksum failures and unsupported layouts fail explicitly. World uploads raw
+channels directly to WebGL without PNG decoding, premultiplication or color
+conversion, preserving MTSDF RGB beneath zero alpha. The owned backend resource
+is released after metadata/pixels have been extracted, including on failure.
+
+Glyph bounds, advances, kerning and line metrics use font units; Font size is
+world units per em (`fontSize / metrics.emSize` scales those metrics). Explicit
+newlines advance by `metrics.lineHeight`; CRLF is treated as one newline.
+Missing glyphs, malformed Unicode or metadata, out-of-atlas bounds and
+pixel-count mismatches are errors.
 
 Text uses left-aligned line boxes, including spaces and blank lines, expanded to
 include glyph overhangs. `config.origin` anchors this complete measured box;
 default `[0, 0]` is top-left. Empty/whitespace-only text retains positive selection
 bounds even without visible glyphs. No resize handles are provided: change
 `fontSize` through Properties. There is no wrapping, complex-script shaping,
-font fallback, outline, shadow or `.arfont` loader in this implementation.
+font fallback, outline or shadow in this implementation.
 
 A transparent offscreen WebGL2 canvas renders distance fields at the current 2D
 canvas transform scale, then composites into World without changing object order.

@@ -7,6 +7,7 @@ export function fontProjectPath(path) {
     !/[\u0000-\u001f\u007f:?#\\]/.test(path) &&
     path.split("/").every(part => part !== "" && part !== "." && part !== ".."),
   "Font asset must be a Project-relative path")
+  assert(/\.arfont$/i.test(path), "Font asset must be an .arfont file")
   return path
 }
 
@@ -20,9 +21,7 @@ function scalar(code) {
 }
 
 export function validateFontDocument(doc) {
-  assert(doc && doc.format === "gams.font" && doc.version === 1, "Expected gams.font version 1")
-  fontProjectPath(doc.image)
-  assert(/\.png$/i.test(doc.image), "Font atlas must be PNG")
+  assert(doc && typeof doc === "object" && !Array.isArray(doc), "Expected font metadata")
   const a = doc.atlas, m = doc.metrics
   assert(a && ["sdf", "psdf", "msdf", "mtsdf"].includes(a.type), "Invalid font atlas type")
   assert(Number.isSafeInteger(a.width) && a.width > 0 && Number.isSafeInteger(a.height) && a.height > 0,
@@ -79,7 +78,7 @@ export function textObjectData(object) {
 }
 
 // Positions use a top-left line box. Ink overhangs are included in selection bounds.
-// UVs address the conventional top-down exported PNG, not the bottom-up metadata.
+// UVs address the raw bottom-up Artery atlas; top-left quads descend in V.
 export function layoutWorldText(doc, text, size, origin = [0, 0]) {
   assert(typeof text === "string" && Number.isFinite(size) && size > 0, "Invalid text layout input")
   const glyphs = new Map(doc.glyphs.map(g => [g.unicode, g]))
@@ -104,8 +103,8 @@ export function layoutWorldText(doc, text, size, origin = [0, 0]) {
       const quad = {
         x: x + p.left * unit, y: baseline - p.top * unit,
         width: (p.right - p.left) * unit, height: (p.top - p.bottom) * unit,
-        uv: [a.left / doc.atlas.width, (doc.atlas.height - a.top) / doc.atlas.height,
-          (a.right - a.left) / doc.atlas.width, (a.top - a.bottom) / doc.atlas.height],
+        uv: [a.left / doc.atlas.width, a.top / doc.atlas.height,
+          (a.right - a.left) / doc.atlas.width, (a.bottom - a.top) / doc.atlas.height],
       }
       quads.push(quad)
       minX = Math.min(minX, quad.x); minY = Math.min(minY, quad.y)

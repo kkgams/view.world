@@ -19,8 +19,7 @@
  * SOFTWARE.
  */
 
-// UVs already address the top-down PNG. ImageBitmap must be decoded with
-// premultiplyAlpha: "none", colorSpaceConversion: "none", imageOrientation: "none".
+// Raw Artery channels and UVs are bottom-up. Never premultiply or color-convert.
 const textRasterVertexSource = `#version 300 es
 precision highp float;
 layout(location=0) in vec2 unit;
@@ -65,12 +64,12 @@ export function createTextRaster() {
     let vao = null
     let buffer = null
     let texture = null
-    let currentImage = null
+    let currentPixels = null
     let uniforms = null
     let limits = null
     let disposed = false
     let lost = false
-    const onLost = () => { lost = true; currentImage = null }
+    const onLost = () => { lost = true; currentPixels = null }
     canvas.addEventListener("webglcontextlost", onLost)
 
     function checkError(operation) {
@@ -80,7 +79,7 @@ export function createTextRaster() {
     }
 
     function release() {
-        currentImage = null
+        currentPixels = null
         if (gl !== null) {
             if (texture !== null) gl.deleteTexture(texture)
             if (buffer !== null) gl.deleteBuffer(buffer)
@@ -169,7 +168,8 @@ export function createTextRaster() {
         if (program === null) initialize()
         textRasterRequire(Number.isSafeInteger(pixelWidth) && Number.isSafeInteger(pixelHeight) && pixelWidth <= Math.min(limits.texture, limits.renderbuffer, limits.viewport[0]) && pixelHeight <= Math.min(limits.texture, limits.renderbuffer, limits.viewport[1]), "Text raster bounds exceed WebGL texture/renderbuffer/viewport limits")
         const atlas = font.document.atlas
-        textRasterRequire(font.image.width === atlas.width && font.image.height === atlas.height, "Text raster image dimensions disagree with font atlas")
+        textRasterRequire(font.pixels instanceof Uint8Array && [1, 3, 4].includes(font.channels) &&
+            font.pixels.length === atlas.width * atlas.height * font.channels, "Invalid text atlas pixels")
         textRasterRequire(atlas.width <= limits.texture && atlas.height <= limits.texture, "Text atlas exceeds WebGL texture limit")
         if (canvas.width !== pixelWidth) canvas.width = pixelWidth
         if (canvas.height !== pixelHeight) canvas.height = pixelHeight
@@ -181,13 +181,14 @@ export function createTextRaster() {
         gl.bindVertexArray(vao)
         gl.activeTexture(gl.TEXTURE0)
         gl.bindTexture(gl.TEXTURE_2D, texture)
-        if (currentImage !== font.image) {
-            // ImageBitmap decoding, not pixelStorei, controls premultiplication,
-            // orientation and color conversion for this upload source.
-            currentImage = null
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, font.image)
+        if (currentPixels !== font.pixels) {
+            const [internal, format] = font.channels === 1 ? [gl.R8, gl.RED] :
+                font.channels === 3 ? [gl.RGB8, gl.RGB] : [gl.RGBA8, gl.RGBA]
+            currentPixels = null
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+            gl.texImage2D(gl.TEXTURE_2D, 0, internal, atlas.width, atlas.height, 0, format, gl.UNSIGNED_BYTE, font.pixels)
             checkError("atlas upload")
-            currentImage = font.image
+            currentPixels = font.pixels
         }
         gl.enable(gl.BLEND)
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)

@@ -1,6 +1,9 @@
 {
   "plugins": [
     {
+      "$file": "https://github.com/kkgams/plugin.font/releases/download/v0.1.1/plugin.font.wasm"
+    },
+    {
       "$file": "https://github.com/kkgams/plugin.fs/releases/download/v0.2.3/plugin.fs.wasm"
     },
     {
