@@ -962,7 +962,7 @@ export class ViewWorld extends ViewCanvasBase {
         <button type="button" data-action="reload"><i aria-hidden="true">refresh</i></button>
       </div>
       <div role="buttongroup" data-element="tool-actions">
-        <button type="button" data-action="add-group" aria-label="Add spatial group">Add group</button>
+        <button type="button" data-action="add-group" aria-label="Add spatial group"><i aria-hidden="true">create_new_folder</i></button>
         <button type="button" data-action="add"><i aria-hidden="true">add_location</i></button>
         <button type="button" data-action="delete" class="danger"><i aria-hidden="true">delete</i></button>
         <button type="button" data-action="properties"><i aria-hidden="true">tune</i></button>
