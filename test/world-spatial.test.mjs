@@ -434,13 +434,86 @@ function resizeView(data = [{ x: 10, y: 20, render: "nine", width: 40, height: 2
     world.selectObject(world.objects.at(-1).editorId)
     const canvas = view(world, invertX, invertY)
     Object.assign(canvas, {
-        rendererRegistry: new ResizeRegistry(origin), resizeDrag: null, resizeCleanup: null,
+        rendererRegistry: new ResizeRegistry(origin), resizeDrag: null, canvasGestureCleanup: null,
         getWorldPoint(x, y) { return this.canvasToProjectPoint({ x, y }) },
         focus() {}, setData() {}, renderSnapshot() {}, setStatus() {},
         async prepareRenderers() {},
     })
     return { world, canvas }
 }
+function selectView(data, invert = false) {
+    const { world, canvas } = resizeView(data, [0, 0], invert, invert)
+    world.selectObject(0)
+    canvas.snapshot = world.snapshot()
+    canvas.selectMode = true
+    canvas.draw = () => {}
+    canvas.openObjectTooltip = () => {}
+    return { world, canvas }
+}
+
+function pressSelect(canvas, x, y, shiftKey = false) {
+    canvas.onCanvasMouseDown({ button: 0, clientX: x, clientY: y, shiftKey, preventDefault() {} })
+}
+
+function releaseSelect(canvas, x, y) {
+    canvas.onCanvasMouseUp({ button: 0, clientX: x, clientY: y })
+}
+
+test("box selection uses rendered bounds, nested world positions and reversed axes", () => {
+    const { world, canvas } = selectView([
+        group("parent", 10, 10), leaf("child", 30, 30, "parent"),
+        { x: 75, y: 60 }, { x: 80, y: 70, lock: true }, { x: 160, y: 90 },
+    ], true)
+    const before = world.toStorageData()
+    pressSelect(canvas, -145, -120)
+    canvas.onCanvasMouseMove({ clientX: -18, clientY: -18, buttons: 1 })
+    assert.deepEqual([...canvas.selectionDrag.preview], [2, 3])
+    assert.equal(world.selectedObjectIds.size, 0)
+    releaseSelect(canvas, -18, -18)
+    assert.deepEqual([...canvas.snapshot.selectedObjectIds], [2, 3])
+    assert.equal(world.activeObjectId, 0)
+    assert.equal(world.toStorageData(), before)
+    assert.equal(world.dirty, false)
+    assert.equal(world.history.canUndo(), false)
+    assert.equal(canvas.canvas.ownerDocument.listeners.size, 0)
+})
+
+test("Shift adds a box selection; Escape cancels the preview; an empty click clears", () => {
+    const { world, canvas } = selectView([{ x: 20, y: 20 }, { x: 110, y: 60 }])
+    pressSelect(canvas, 21, 21)
+    canvas.onCanvasMouseMove({ clientX: 26, clientY: 26, buttons: 1 })
+    releaseSelect(canvas, 26, 26)
+    assert.equal(world.activeObjectId, 1)
+    assert.deepEqual([world.objects[0].x, world.objects[0].y], [20, 20])
+    pressSelect(canvas, 160, 90, true)
+    const doc = canvas.canvas.ownerDocument
+    doc.listeners.get("mouseup")({ button: 0, clientX: 100, clientY: 50 })
+    assert.deepEqual([...world.selectedObjectIds], [1, 2])
+
+    pressSelect(canvas, 0, 0)
+    canvas.onCanvasMouseMove({ clientX: 65, clientY: 50, buttons: 1 })
+    assert.deepEqual([...canvas.selectionDrag.preview], [1])
+    doc.listeners.get("keydown")({ key: "Escape", preventDefault() {}, stopPropagation() {} })
+    assert.equal(canvas.selectionDrag, null)
+    assert.equal(doc.listeners.size, 0)
+    assert.equal(doc.defaultView.listeners.size, 0)
+    assert.deepEqual([...world.selectedObjectIds], [1, 2])
+    pressSelect(canvas, 0, 0)
+    releaseSelect(canvas, 0, 0)
+    assert.equal(world.selectedObjectIds.size, 0)
+})
+
+test("multi-selection is restored by undo and cleared when opening a new world", () => {
+    const world = state([{ x: 0, y: 0 }, { x: 10, y: 10 }])
+    world.selectObjects([1, 2])
+    const added = world.addObject(20, 20)
+    assert.equal(world.activeObjectId, added)
+    world.undo()
+    assert.deepEqual([...world.selectedObjectIds], [1, 2])
+    world.open("other.world.json", '[{"x": 0, "y": 0}]')
+    assert.equal(world.selectedObjectIds.size, 0)
+})
+
 function pressResize(canvas, edge) {
     const object = canvas.snapshot.objects.find(object => object.editorId === canvas.snapshot.activeObjectId)
     const handle = resize.resizeHandles(canvas.objectCanvasBounds(object)).find(handle => handle.edge === edge)

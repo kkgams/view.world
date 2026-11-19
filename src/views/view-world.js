@@ -176,7 +176,7 @@ class WorldState {
         this.loaded = false
         this.objects = []
         this.nextObjectId = 1
-        this.activeObjectId = 0
+        this.selectedObjectIds = new Set()
         this.dirty = false
         this.history = new UndoHistory()
     }
@@ -187,7 +187,7 @@ class WorldState {
         this.loaded = true
         this.objects = []
         this.nextObjectId = 1
-        this.activeObjectId = 0
+        this.selectedObjectIds = new Set()
         this.dirty = true
         this.resetHistory()
     }
@@ -205,7 +205,7 @@ class WorldState {
         this.loaded = true
         this.objects = objects
         this.nextObjectId = objects.length + 1
-        this.activeObjectId = 0
+        this.selectedObjectIds = new Set()
         this.dirty = false
         this.resetHistory()
     }
@@ -254,6 +254,7 @@ class WorldState {
             dirty: this.dirty,
             objects: cloneObjects(this.objects),
             activeObjectId: this.activeObjectId,
+            selectedObjectIds: new Set(this.selectedObjectIds),
             canUndo: this.history.canUndo(),
             canRedo: this.history.canRedo(),
             history: this.createHistorySnapshot(),
@@ -269,17 +270,17 @@ class WorldState {
             y: Math.round(y),
             props: cloneProps(props, "world object props"),
         }
-        const previousActive = this.activeObjectId
+        const previousSelection = this.selectedObjectIds
         this.executeDirtyCommand(
             "Add object",
             () => {
                 this.objects.push(object)
-                this.activeObjectId = object.editorId
+                this.selectObject(object.editorId)
             },
             () => {
                 const index = this.indexForId(object.editorId)
                 this.objects.splice(index, 1)
-                this.activeObjectId = previousActive
+                this.selectedObjectIds = previousSelection
             },
         )
         return object.editorId
@@ -390,7 +391,7 @@ class WorldState {
     deleteObject(editorId) {
         const object = this.requireObject(editorId)
         const previous = cloneObjects(this.objects)
-        const previousActive = this.activeObjectId
+        const previousSelection = this.selectedObjectIds
         const next = cloneObjects(this.objects).filter((candidate) => candidate.editorId !== editorId)
         if (isSpatialGroup(object)) {
             for (const child of next) {
@@ -404,20 +405,28 @@ class WorldState {
         validateSpatial(next)
         this.executeDirtyCommand("Delete object (keep children)", () => {
             this.objects = cloneObjects(next)
-            this.activeObjectId = 0
+            this.selectObject(0)
         }, () => {
             this.objects = cloneObjects(previous)
-            this.activeObjectId = previousActive
+            this.selectedObjectIds = previousSelection
         })
     }
 
-    selectObject(editorId) {
-        if (editorId === 0) {
-            this.activeObjectId = 0
-            return
+    get activeObjectId() {
+        return this.selectedObjectIds.size === 1 ? this.selectedObjectIds.values().next().value : 0
+    }
+
+    selectObject(editorId, additive = false) {
+        this.selectObjects(editorId === 0 ? [] : [editorId], additive)
+    }
+
+    selectObjects(editorIds, additive = false) {
+        const selection = new Set(additive ? this.selectedObjectIds : [])
+        for (const id of editorIds) {
+            this.requireObject(id)
+            selection.add(id)
         }
-        this.requireObject(editorId)
-        this.activeObjectId = editorId
+        this.selectedObjectIds = selection
     }
 
     setObjectPosition(editorId, x, y) {
@@ -579,7 +588,7 @@ class WorldState {
         units[target] = units[unitIndex]
         units[unitIndex] = targetUnit
         const next = units.flatMap((unit) => unit.objects.map(cloneObject))
-        this.replaceObjectsCommand(label, previous, next, this.activeObjectId)
+        this.replaceObjectsCommand(label, previous, next)
         return true
     }
 
@@ -599,17 +608,18 @@ class WorldState {
     }
 
     replaceObjectsCommand(label, previous, next, activeObjectId) {
-        const previousActive = this.activeObjectId
+        const previousSelection = this.selectedObjectIds
         validateSpatial(next)
         this.executeDirtyCommand(
             label,
             () => {
                 this.objects = cloneObjects(next)
-                this.activeObjectId = activeObjectId
+                if (activeObjectId === undefined) this.selectedObjectIds = previousSelection
+                else this.selectObject(activeObjectId)
             },
             () => {
                 this.objects = cloneObjects(previous)
-                this.activeObjectId = previousActive
+                this.selectedObjectIds = previousSelection
             },
         )
     }
@@ -740,7 +750,9 @@ export class ViewWorld extends ViewCanvasBase {
         this.showGrid = true
         this.objectDrag = null
         this.resizeDrag = null
-        this.resizeCleanup = null
+        this.selectMode = false
+        this.selectionDrag = null
+        this.canvasGestureCleanup = null
         this.tableDragDrop = null
         this.busy = false
         this.collapsedGroups = new Set()
@@ -839,6 +851,7 @@ export class ViewWorld extends ViewCanvasBase {
         this.initializingRenderers = true
         delete this.dataset.ready
         this.cancelResize(false)
+        this.cancelBoxSelection(false)
         this.disposeRendererPanels()
         if (this.tableDragDrop) this.tableDragDrop.destroy()
         this.tableDragDrop = null
@@ -962,6 +975,7 @@ export class ViewWorld extends ViewCanvasBase {
         <button type="button" data-action="reload"><i aria-hidden="true">refresh</i></button>
       </div>
       <div role="buttongroup" data-element="tool-actions">
+        <button type="button" data-action="select" aria-label="Select objects" aria-selected="${this.selectMode}"><i aria-hidden="true">select_all</i></button>
         <button type="button" data-action="add-group" aria-label="Add spatial group"><i aria-hidden="true">create_new_folder</i></button>
         <button type="button" data-action="add"><i aria-hidden="true">add_location</i></button>
         <button type="button" data-action="delete" class="danger"><i aria-hidden="true">delete</i></button>
@@ -994,8 +1008,8 @@ export class ViewWorld extends ViewCanvasBase {
             }
             const row = event.target.closest("tr[data-object-id]")
             if (!(row instanceof HTMLTableRowElement)) return
-            this.state.selectObject(Number(row.dataset.objectId))
-            await this.refreshSnapshot("Object selected")
+            this.state.selectObject(Number(row.dataset.objectId), this.selectMode && event.shiftKey)
+            await this.refreshSnapshot(this.selectionStatus())
         })
         this.objectsElement.addEventListener("keydown", async (event) => {
             const heading = event.target.closest('th[role="button"][aria-expanded]')
@@ -1009,8 +1023,9 @@ export class ViewWorld extends ViewCanvasBase {
                     if (next) next.focus()
                 } else if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault()
-                    this.state.selectObject(Number(row.dataset.objectId))
-                    await this.refreshSnapshot("Object selected")
+                    event.stopPropagation()
+                    this.state.selectObject(Number(row.dataset.objectId), this.selectMode && event.shiftKey)
+                    await this.refreshSnapshot(this.selectionStatus())
                 }
                 return
             }
@@ -1040,6 +1055,7 @@ export class ViewWorld extends ViewCanvasBase {
         this.queryHeader('[data-action="save"]').addEventListener("click", async () => this.save())
         this.queryHeader('[data-action="save-as"]').addEventListener("click", async () => this.saveAs())
         this.queryHeader('[data-action="reload"]').addEventListener("click", async () => this.reload())
+        this.queryHeader('[data-action="select"]').addEventListener("click", () => this.toggleSelectMode())
         this.queryHeader('[data-action="add"]').addEventListener("click", async () => this.add())
         this.queryHeader('[data-action="add-group"]').addEventListener("click", async () => this.add(true))
         this.queryHeader('[data-action="delete"]').addEventListener("click", async () => this.deleteSelected())
@@ -1104,6 +1120,7 @@ export class ViewWorld extends ViewCanvasBase {
     async new() {
         const target = await this.chooseSaveTarget("new.world.json")
         if (target.cancelled) return
+        this.cancelBoxSelection(false)
         this.state.create(target.path)
         this.collapsedGroups.clear()
         this.rendererPreparationKey = ""
@@ -1134,6 +1151,7 @@ export class ViewWorld extends ViewCanvasBase {
     async openPath(path, { autoFit = true } = {}) {
         assert(typeof path === "string" && path.length > 0, "view-world open requires path")
         const data = unwrap(await runtime.invoke("fs/fs::read-text", path))
+        this.cancelBoxSelection(false)
         this.state.open(path, data)
         this.syncDataSource(path)
         this.objectDrag = null
@@ -1307,6 +1325,21 @@ export class ViewWorld extends ViewCanvasBase {
         return super.zoomFit()
     }
 
+    toggleSelectMode() {
+        this.cancelResize()
+        this.cancelBoxSelection(false)
+        this.selectMode = !this.selectMode
+        this.queryHeader('[data-action="select"]').setAttribute("aria-selected", String(this.selectMode))
+        this.draw()
+        this.setStatus(this.selectMode ? "Drag from empty space to select objects; Shift adds to selection" : "Select mode off", "info")
+    }
+
+    selectionStatus() {
+        const count = this.state.selectedObjectIds.size
+        if (count === 0) return "Selection cleared"
+        return count === 1 ? "Object selected" : `${count} objects selected`
+    }
+
     toggleGrid() {
         this.showGrid = !this.showGrid
         const button = this.queryHeader('[data-action="grid"]')
@@ -1358,6 +1391,7 @@ export class ViewWorld extends ViewCanvasBase {
 
     async refreshSnapshot(status, { autoFit = false } = {}) {
         this.cancelResize(false)
+        this.cancelBoxSelection(false)
         this.closeObjectTooltip()
         const snapshot = validateSnapshot(this.state.snapshot())
         await this.prepareRenderers(snapshot)
@@ -1548,7 +1582,7 @@ export class ViewWorld extends ViewCanvasBase {
         row.dataset.objectId = String(object.editorId)
         row.draggable = !this.busy
         row.tabIndex = 0
-        if (object.editorId === this.snapshot.activeObjectId) row.setAttribute("aria-selected", "true")
+        if (this.snapshot.selectedObjectIds.has(object.editorId)) row.setAttribute("aria-selected", "true")
 
         const nameCell = document.createElement(isSpatialGroup(object) ? "th" : "td")
         if (isSpatialGroup(object)) {
@@ -1614,7 +1648,9 @@ export class ViewWorld extends ViewCanvasBase {
             const row = document.createElement("tr")
             const cell = document.createElement("td")
             cell.colSpan = 2
-            cell.textContent = "No object selected"
+            cell.textContent = snapshot.selectedObjectIds.size > 1
+                ? `${snapshot.selectedObjectIds.size} objects selected`
+                : "No object selected"
             row.appendChild(cell)
             this.propsElement.appendChild(row)
             return
@@ -1693,6 +1729,7 @@ export class ViewWorld extends ViewCanvasBase {
         save.disabled = !snapshot.loaded
         saveAs.disabled = !snapshot.loaded
         reload.disabled = !snapshot.loaded
+        this.queryHeader('[data-action="select"]').disabled = this.busy || !snapshot.loaded
         add.disabled = !snapshot.loaded
         this.queryHeader('[data-action="add-group"]').disabled = !snapshot.loaded
         remove.disabled = snapshot.activeObjectId === 0
@@ -1768,6 +1805,16 @@ export class ViewWorld extends ViewCanvasBase {
         if (this.showGrid) this.drawGrid(ctx)
         this.drawAxes(ctx)
         this.drawObjects(ctx, snapshot)
+        if (this.selectionDrag) {
+            const { minX, minY, maxX, maxY } = this.selectionDrag.bounds
+            ctx.save()
+            ctx.fillStyle = "rgba(122,162,255,0.18)"
+            ctx.strokeStyle = "#7aa2ff"
+            ctx.lineWidth = 1 / this.scale
+            ctx.fillRect(minX, minY, maxX - minX, maxY - minY)
+            ctx.strokeRect(minX, minY, maxX - minX, maxY - minY)
+            ctx.restore()
+        }
     }
 
     drawGrid(ctx) {
@@ -1846,8 +1893,10 @@ export class ViewWorld extends ViewCanvasBase {
                 ctx.restore()
             }
         })
-        const selected = snapshot.objects.find((object) => object.editorId === snapshot.activeObjectId)
-        if (selected) this.drawSelection(ctx, selected)
+        const selection = this.selectionDrag ? this.selectionDrag.preview : snapshot.selectedObjectIds
+        for (const object of snapshot.objects) {
+            if (selection.has(object.editorId)) this.drawSelection(ctx, object)
+        }
     }
 
     drawSelection(ctx, object, selected = true) {
@@ -1872,7 +1921,7 @@ export class ViewWorld extends ViewCanvasBase {
         ctx.arc(anchor.x, anchor.y, 4 / this.scale, 0, Math.PI * 2)
         ctx.fill()
         ctx.stroke()
-        if (selected && this.canResizeObject(object)) {
+        if (selected && !this.selectMode && object.editorId === this.snapshot.activeObjectId && this.canResizeObject(object)) {
             const size = this.resizeScreenSize(7)
             ctx.lineWidth = 1 / this.scale
             for (const handle of resizeHandles(this.objectCanvasBounds(object), this.rendererRegistry.resizeLimits(object))) {
@@ -1893,6 +1942,7 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     selectedResizeHandle(point) {
+        if (this.selectMode) return null
         const object = this.snapshot.objects.find(object => object.editorId === this.snapshot.activeObjectId)
         if (!object || !this.canResizeObject(object)) return null
         const tolerance = this.resizeScreenSize(6)
@@ -1912,10 +1962,10 @@ export class ViewWorld extends ViewCanvasBase {
             pointer: this.projectToCanvasPoint(point),
         }
         this.canvas.style.cursor = handle.cursor
-        this.bindResizeGesture()
+        this.bindCanvasGesture(() => this.cancelResize())
     }
 
-    bindResizeGesture() {
+    bindCanvasGesture(cancel) {
         const doc = this.canvas.ownerDocument
         const move = event => { if (event.target !== this.canvas) this.onCanvasMouseMove(event) }
         const up = event => { if (event.target !== this.canvas) this.onCanvasMouseUp(event) }
@@ -1923,14 +1973,14 @@ export class ViewWorld extends ViewCanvasBase {
             if (event.key !== "Escape" && event.key !== " ") return
             event.preventDefault()
             event.stopPropagation()
-            if (event.key === "Escape") this.cancelResize()
+            if (event.key === "Escape") cancel()
         }
-        const blur = () => this.cancelResize()
+        const blur = () => cancel()
         doc.addEventListener("mousemove", move)
         doc.addEventListener("mouseup", up)
         doc.addEventListener("keydown", key, true)
         doc.defaultView.addEventListener("blur", blur)
-        this.resizeCleanup = () => {
+        this.canvasGestureCleanup = () => {
             doc.removeEventListener("mousemove", move)
             doc.removeEventListener("mouseup", up)
             doc.removeEventListener("keydown", key, true)
@@ -1940,9 +1990,13 @@ export class ViewWorld extends ViewCanvasBase {
 
     finishResizeGesture() {
         this.resizeDrag = null
-        if (this.resizeCleanup) this.resizeCleanup()
-        this.resizeCleanup = null
+        this.releaseCanvasGesture()
         this.canvas.style.cursor = "default"
+    }
+
+    releaseCanvasGesture() {
+        if (this.canvasGestureCleanup) this.canvasGestureCleanup()
+        this.canvasGestureCleanup = null
     }
 
     cancelResize(refresh = true) {
@@ -1981,6 +2035,42 @@ export class ViewWorld extends ViewCanvasBase {
         }
     }
 
+    startBoxSelection(point, additive) {
+        const start = this.projectToCanvasPoint(point)
+        const base = new Set(additive ? this.state.selectedObjectIds : [])
+        this.selectionDrag = { start, base }
+        this.bindCanvasGesture(() => this.cancelBoxSelection())
+        this.updateBoxSelection(point)
+        this.draw()
+    }
+
+    updateBoxSelection(point) {
+        const drag = this.selectionDrag
+        const end = this.projectToCanvasPoint(point)
+        const bounds = {
+            minX: Math.min(drag.start.x, end.x), minY: Math.min(drag.start.y, end.y),
+            maxX: Math.max(drag.start.x, end.x), maxY: Math.max(drag.start.y, end.y),
+        }
+        drag.bounds = bounds
+        drag.preview = new Set(drag.base)
+        if (bounds.minX === bounds.maxX || bounds.minY === bounds.maxY) return
+        const objects = this.snapshot.objects
+        for (const object of objects) {
+            if (objectLocked(object)) continue
+            const b = this.objectCanvasBounds(object, objects)
+            if (bounds.minX <= b.minX && bounds.minY <= b.minY && bounds.maxX >= b.maxX && bounds.maxY >= b.maxY) {
+                drag.preview.add(object.editorId)
+            }
+        }
+    }
+
+    cancelBoxSelection(redraw = true) {
+        if (!this.selectionDrag) return
+        this.selectionDrag = null
+        this.releaseCanvasGesture()
+        if (redraw) this.draw()
+    }
+
     onCanvasMouseDown(event) {
         if (event.button !== 0 || !this.state.loaded || this.busy) return
         const point = this.getWorldPoint(event.clientX, event.clientY)
@@ -1993,6 +2083,17 @@ export class ViewWorld extends ViewCanvasBase {
         }
         const object = this.hitTest(point)
         this.focus()
+        if (this.selectMode) {
+            event.preventDefault()
+            if (object) {
+                this.state.selectObject(object.editorId, event.shiftKey)
+                this.refreshLiveSnapshot()
+                this.setStatus(this.selectionStatus(), "info")
+            } else {
+                this.startBoxSelection(point, event.shiftKey)
+            }
+            return
+        }
         if (!object) {
             this.state.selectObject(0)
             void this.refreshSnapshot("Selection cleared")
@@ -2015,6 +2116,12 @@ export class ViewWorld extends ViewCanvasBase {
             if ((event.buttons & 1) === 0) { this.cancelResize(); return }
             this.canvas.style.cursor = `${this.resizeDrag.edge}-resize`
             this.updateResize(point)
+            return
+        }
+        if (this.selectionDrag) {
+            if ((event.buttons & 1) === 0) { this.cancelBoxSelection(); return }
+            this.updateBoxSelection(point)
+            this.draw()
             return
         }
         if (this.objectDrag) {
@@ -2052,6 +2159,15 @@ export class ViewWorld extends ViewCanvasBase {
             void this.refreshSnapshot(changed ? "Object resized" : "Size unchanged")
             return
         }
+        if (this.selectionDrag) {
+            if (event.button !== 0) return
+            this.updateBoxSelection(this.getWorldPoint(event.clientX, event.clientY))
+            this.state.selectObjects(this.selectionDrag.preview)
+            this.cancelBoxSelection(false)
+            this.refreshLiveSnapshot()
+            this.setStatus(this.selectionStatus(), "info")
+            return
+        }
         if (!this.objectDrag) return
         const drag = this.objectDrag
         const object = this.state.requireObject(drag.editorId)
@@ -2066,7 +2182,7 @@ export class ViewWorld extends ViewCanvasBase {
 
     onCanvasMouseLeave(event) {
         this.closeObjectTooltip()
-        if (this.resizeDrag) return
+        if (this.resizeDrag || this.selectionDrag) return
         if (this.canvas) this.canvas.style.cursor = "default"
         if (!this.objectDrag || (event.buttons & 1) !== 0) return
         this.onCanvasMouseUp(event)
@@ -2174,7 +2290,10 @@ export class ViewWorld extends ViewCanvasBase {
     }
 
     setBusy(busy) {
-        if (busy) this.cancelResize()
+        if (busy) {
+            this.cancelResize()
+            this.cancelBoxSelection()
+        }
         this.busy = busy
         if (this.tableDragDrop) this.tableDragDrop.cancel()
         for (const row of this.objectsElement.querySelectorAll("tr[data-object-id]")) {
