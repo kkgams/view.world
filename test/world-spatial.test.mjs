@@ -203,19 +203,6 @@ for (const invertX of [false, true]) for (const invertY of [false, true]) {
         assert.equal(canvas.hitTest({ x: 100, y: 200 }).editorId, 1)
     })
 }
-test("live group drag records one undo command and leaves descendant locals unchanged", () => {
-    const world = state([group("a", 10, 20), leaf("b", 30, 40, "a")])
-    world.moveObjectLive(1, 15, 26)
-    world.moveObjectLive(1, 17, 28)
-    world.commitLiveMove(1, { x: 10, y: 20 }, { x: 17, y: 28 })
-    assert.deepEqual(position(world, 1), { x: 47, y: 68 })
-    assert.equal(world.history.toArray().length, 1)
-    world.undo()
-    assert.deepEqual(position(world, 1), { x: 40, y: 60 })
-    world.redo()
-    assert.equal(world.objects[1].x, 30)
-})
-
 test("drawing leaves preserves global stacking and translates renderers/viewport by ancestors", () => {
     const world = state([group("a", 100, 200), leaf("b", 30, 40, "a"), leaf("c", 5, 6)])
     const canvas = view(world, true, false)
@@ -237,10 +224,13 @@ test("canvas drag uses pointer deltas in parent coordinates for nested group", (
     canvas.focus = () => {}
     canvas.refreshLiveSnapshot = () => { canvas.snapshot = world.snapshot() }
     canvas.refreshSnapshot = async () => { canvas.snapshot = world.snapshot() }
-    canvas.onCanvasMouseDown({ button: 0, clientX: 120, clientY: 230 })
-    assert.equal(canvas.objectDrag.editorId, 2)
-    canvas.onCanvasMouseMove({ clientX: 127, clientY: 221 })
-    canvas.onCanvasMouseUp({})
+    canvas.setData = () => {}
+    canvas.renderSnapshot = () => {}
+    canvas.setStatus = () => {}
+    pressSelect(canvas, 120, 230)
+    assert.deepEqual([...canvas.objectDrag.ids], [2])
+    canvas.onCanvasMouseMove({ clientX: 127, clientY: 221, buttons: 1 })
+    releaseSelect(canvas, 127, 221)
     assert.deepEqual(position(world, 2), { x: 167, y: 271 })
     assert.deepEqual({ x: world.objects[1].x, y: world.objects[1].y }, { x: 27, y: 21 })
     world.undo()
@@ -481,8 +471,7 @@ test("box selection uses rendered bounds, nested world positions and reversed ax
 test("Shift adds a box selection; Escape cancels the preview; an empty click clears", () => {
     const { world, canvas } = selectView([{ x: 20, y: 20 }, { x: 110, y: 60 }])
     pressSelect(canvas, 21, 21)
-    canvas.onCanvasMouseMove({ clientX: 26, clientY: 26, buttons: 1 })
-    releaseSelect(canvas, 26, 26)
+    releaseSelect(canvas, 21, 21)
     assert.equal(world.activeObjectId, 1)
     assert.deepEqual([world.objects[0].x, world.objects[0].y], [20, 20])
     pressSelect(canvas, 160, 90, true)
@@ -501,6 +490,62 @@ test("Shift adds a box selection; Escape cancels the preview; an empty click cle
     pressSelect(canvas, 0, 0)
     releaseSelect(canvas, 0, 0)
     assert.equal(world.selectedObjectIds.size, 0)
+})
+
+test("dragging a box-selected object moves the selection as one undoable edit", () => {
+    const { world, canvas } = selectView([{ x: 30, y: 40 }, { x: 80, y: 90 }, { x: 150, y: 150 }], true)
+    pressSelect(canvas, 20, 0)
+    releaseSelect(canvas, -100, -115)
+    pressSelect(canvas, -30, -40)
+    canvas.onCanvasMouseMove({ clientX: -41, clientY: -34, buttons: 1 })
+    assert.deepEqual(canvas.snapshot.objects.map(({ x, y }) => [x, y]), [[41, 34], [91, 84], [150, 150]])
+    assert.deepEqual(world.objects.map(({ x, y }) => [x, y]), [[30, 40], [80, 90], [150, 150]])
+    assert.equal(world.dirty, false)
+
+    const doc = canvas.canvas.ownerDocument
+    doc.listeners.get("mouseup")({ button: 0, clientX: -50, clientY: -30 })
+    assert.deepEqual(world.objects.map(({ x, y }) => [x, y]), [[50, 30], [100, 80], [150, 150]])
+    assert.deepEqual([...world.selectedObjectIds], [1, 2])
+    assert.equal(doc.listeners.size, 0)
+    assert.equal(world.history.toArray().length, 1)
+    world.undo()
+    assert.deepEqual(world.objects.map(({ x, y }) => [x, y]), [[30, 40], [80, 90], [150, 150]])
+    world.redo()
+    assert.deepEqual(world.objects.map(({ x, y }) => [x, y]), [[50, 30], [100, 80], [150, 150]])
+})
+
+test("drag moves descendants of a selected group once and skips directly locked objects", () => {
+    const { world, canvas } = selectView([
+        group("parent", 30, 30), group("nested", 30, 30, "parent"), leaf("child", 40, 50, "nested"),
+        { x: 150, y: 150, lock: true }, { x: 250, y: 250 },
+    ])
+    world.selectObjects([1, 2, 3, 4, 5])
+    canvas.snapshot = world.snapshot()
+    canvas.selectMode = false
+    pressSelect(canvas, 105, 112)
+    releaseSelect(canvas, 115, 122)
+    assert.deepEqual(world.objects.map(({ x, y }) => [x, y]), [[40, 40], [30, 30], [40, 50], [150, 150], [260, 260]])
+    assert.deepEqual(position(world, 2), { x: 110, y: 120 })
+})
+
+test("Escape discards a move preview; picking an unselected object replaces the selection", () => {
+    const { world, canvas } = selectView([{ x: 30, y: 40 }, { x: 80, y: 90 }, { x: 150, y: 150 }])
+    world.selectObjects([1, 2])
+    canvas.snapshot = world.snapshot()
+    pressSelect(canvas, 35, 45)
+    canvas.onCanvasMouseMove({ clientX: 45, clientY: 55, buttons: 1 })
+    const doc = canvas.canvas.ownerDocument
+    doc.listeners.get("keydown")({ key: "Escape", preventDefault() {}, stopPropagation() {} })
+    assert.equal(canvas.objectDrag, null)
+    assert.equal(doc.listeners.size, 0)
+    assert.equal(canvas.snapshot.objects[0].x, 30)
+    assert.deepEqual([...world.selectedObjectIds], [1, 2])
+    assert.equal(world.dirty, false)
+
+    pressSelect(canvas, 155, 155)
+    releaseSelect(canvas, 155, 155)
+    assert.deepEqual([...world.selectedObjectIds], [3])
+    assert.equal(world.history.canUndo(), false)
 })
 
 test("multi-selection is restored by undo and cleared when opening a new world", () => {

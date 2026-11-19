@@ -452,40 +452,33 @@ class WorldState {
         return true
     }
 
-    moveObjectLive(editorId, x, y) {
-        assert(Number.isFinite(x), "world live object x must be finite")
-        assert(Number.isFinite(y), "world live object y must be finite")
-        const object = this.requireObject(editorId)
-        object.x = Math.round(x)
-        object.y = Math.round(y)
-        this.dirty = true
+    movableSelectionIds() {
+        const selected = this.objects.filter(object => this.selectedObjectIds.has(object.editorId) && !objectLocked(object))
+        const inherited = new Set()
+        for (const object of selected) {
+            if (!isSpatialGroup(object)) continue
+            for (const id of spatialDescendants(this.objects, object)) {
+                if (id !== object.editorId) inherited.add(id)
+            }
+        }
+        return new Set(selected.filter(object => !inherited.has(object.editorId)).map(object => object.editorId))
     }
 
-    commitLiveMove(editorId, previous, next) {
-        assert(
-            Number.isFinite(previous.x) && Number.isFinite(previous.y),
-            "world live move previous position must be finite",
-        )
-        assert(Number.isFinite(next.x) && Number.isFinite(next.y), "world live move next position must be finite")
-        if (previous.x === next.x && previous.y === next.y) return false
-        this.history.add(
-            new WorldCommand(
-                "Move object",
-                () => {
-                    const object = this.requireObject(editorId)
-                    object.x = next.x
-                    object.y = next.y
-                    this.dirty = true
-                },
-                () => {
-                    const object = this.requireObject(editorId)
-                    object.x = previous.x
-                    object.y = previous.y
-                    this.dirty = true
-                },
-            ),
-        )
-        this.dirty = true
+    moveObjects(ids, dx, dy) {
+        assert(Number.isInteger(dx) && Number.isInteger(dy), "world move must use integer pixel offsets")
+        if (ids.size === 0 || (dx === 0 && dy === 0)) return false
+        const starts = [...ids].map(id => {
+            const { x, y } = this.requireObject(id)
+            return { id, x, y }
+        })
+        const apply = (offsetX, offsetY) => {
+            for (const { id, x, y } of starts) {
+                const object = this.requireObject(id)
+                object.x = x + offsetX
+                object.y = y + offsetY
+            }
+        }
+        this.executeDirtyCommand(ids.size === 1 ? "Move object" : "Move objects", () => apply(dx, dy), () => apply(0, 0))
         return true
     }
 
@@ -852,6 +845,7 @@ export class ViewWorld extends ViewCanvasBase {
         delete this.dataset.ready
         this.cancelResize(false)
         this.cancelBoxSelection(false)
+        this.cancelObjectDrag(false)
         this.disposeRendererPanels()
         if (this.tableDragDrop) this.tableDragDrop.destroy()
         this.tableDragDrop = null
@@ -1121,6 +1115,7 @@ export class ViewWorld extends ViewCanvasBase {
         const target = await this.chooseSaveTarget("new.world.json")
         if (target.cancelled) return
         this.cancelBoxSelection(false)
+        this.cancelObjectDrag(false)
         this.state.create(target.path)
         this.collapsedGroups.clear()
         this.rendererPreparationKey = ""
@@ -1153,8 +1148,8 @@ export class ViewWorld extends ViewCanvasBase {
         const data = unwrap(await runtime.invoke("fs/fs::read-text", path))
         this.cancelBoxSelection(false)
         this.state.open(path, data)
+        this.cancelObjectDrag(false)
         this.syncDataSource(path)
-        this.objectDrag = null
         this.rendererPreparationKey = ""
         this.collapsedGroups.clear()
         await this.refreshSnapshot(`Opened ${path}`, { autoFit })
@@ -1328,10 +1323,11 @@ export class ViewWorld extends ViewCanvasBase {
     toggleSelectMode() {
         this.cancelResize()
         this.cancelBoxSelection(false)
+        this.cancelObjectDrag()
         this.selectMode = !this.selectMode
         this.queryHeader('[data-action="select"]').setAttribute("aria-selected", String(this.selectMode))
         this.draw()
-        this.setStatus(this.selectMode ? "Drag from empty space to select objects; Shift adds to selection" : "Select mode off", "info")
+        this.setStatus(this.selectMode ? "Drag from empty space to select or drag an object to move the selection; Shift adds to selection" : "Select mode off", "info")
     }
 
     selectionStatus() {
@@ -1392,6 +1388,7 @@ export class ViewWorld extends ViewCanvasBase {
     async refreshSnapshot(status, { autoFit = false } = {}) {
         this.cancelResize(false)
         this.cancelBoxSelection(false)
+        this.cancelObjectDrag(false)
         this.closeObjectTooltip()
         const snapshot = validateSnapshot(this.state.snapshot())
         await this.prepareRenderers(snapshot)
@@ -2071,8 +2068,20 @@ export class ViewWorld extends ViewCanvasBase {
         if (redraw) this.draw()
     }
 
+    objectDragOffset(point) {
+        const { start } = this.objectDrag
+        return { x: Math.round(point.x - start.x), y: Math.round(point.y - start.y) }
+    }
+
+    cancelObjectDrag(refresh = true) {
+        if (!this.objectDrag) return
+        this.objectDrag = null
+        this.releaseCanvasGesture()
+        if (refresh) this.refreshLiveSnapshot()
+    }
+
     onCanvasMouseDown(event) {
-        if (event.button !== 0 || !this.state.loaded || this.busy) return
+        if (event.button !== 0 || !this.state.loaded || this.busy || this.canvasGestureCleanup) return
         const point = this.getWorldPoint(event.clientX, event.clientY)
         const handle = this.selectedResizeHandle(point)
         if (handle) {
@@ -2083,30 +2092,22 @@ export class ViewWorld extends ViewCanvasBase {
         }
         const object = this.hitTest(point)
         this.focus()
-        if (this.selectMode) {
-            event.preventDefault()
-            if (object) {
-                this.state.selectObject(object.editorId, event.shiftKey)
-                this.refreshLiveSnapshot()
-                this.setStatus(this.selectionStatus(), "info")
-            } else {
+        this.closeObjectTooltip()
+        if (!object) {
+            if (this.selectMode) {
+                event.preventDefault()
                 this.startBoxSelection(point, event.shiftKey)
+            } else {
+                this.clearSelection()
             }
             return
         }
-        if (!object) {
-            this.state.selectObject(0)
-            void this.refreshSnapshot("Selection cleared")
-            return
+        if (!this.state.selectedObjectIds.has(object.editorId)) {
+            this.state.selectObject(object.editorId, this.selectMode && event.shiftKey)
         }
-        this.state.selectObject(object.editorId)
-        this.objectDrag = {
-            editorId: object.editorId,
-            pointerX: point.x,
-            pointerY: point.y,
-            startX: object.x,
-            startY: object.y,
-        }
+        event.preventDefault()
+        this.objectDrag = { start: point, ids: this.state.movableSelectionIds() }
+        this.bindCanvasGesture(() => this.cancelObjectDrag())
         this.refreshLiveSnapshot()
     }
 
@@ -2125,12 +2126,17 @@ export class ViewWorld extends ViewCanvasBase {
             return
         }
         if (this.objectDrag) {
-            this.state.moveObjectLive(
-                this.objectDrag.editorId,
-                this.objectDrag.startX + point.x - this.objectDrag.pointerX,
-                this.objectDrag.startY + point.y - this.objectDrag.pointerY,
-            )
-            this.refreshLiveSnapshot()
+            if ((event.buttons & 1) === 0) { this.cancelObjectDrag(); return }
+            const { x, y } = this.objectDragOffset(point)
+            const snapshot = this.state.snapshot()
+            for (const object of snapshot.objects) {
+                if (!this.objectDrag.ids.has(object.editorId)) continue
+                object.x += x
+                object.y += y
+            }
+            this.snapshot = validateSnapshot(snapshot)
+            this.setData(this.snapshot, { autoFit: false })
+            this.renderSnapshot(this.snapshot)
             return
         }
 
@@ -2168,24 +2174,17 @@ export class ViewWorld extends ViewCanvasBase {
             this.setStatus(this.selectionStatus(), "info")
             return
         }
-        if (!this.objectDrag) return
-        const drag = this.objectDrag
-        const object = this.state.requireObject(drag.editorId)
-        this.objectDrag = null
-        const changed = this.state.commitLiveMove(
-            drag.editorId,
-            { x: drag.startX, y: drag.startY },
-            { x: object.x, y: object.y },
-        )
-        void this.refreshSnapshot(changed ? "Object moved" : "Object selected")
+        if (!this.objectDrag || event.button !== 0) return
+        const { ids } = this.objectDrag
+        const { x, y } = this.objectDragOffset(this.getWorldPoint(event.clientX, event.clientY))
+        this.cancelObjectDrag(false)
+        const changed = this.state.moveObjects(ids, x, y)
+        this.refreshLiveSnapshot()
+        this.setStatus(changed ? (this.state.selectedObjectIds.size === 1 ? "Object moved" : "Selection moved") : this.selectionStatus(), "info")
     }
 
-    onCanvasMouseLeave(event) {
+    onCanvasMouseLeave() {
         this.closeObjectTooltip()
-        if (this.resizeDrag || this.selectionDrag) return
-        if (this.canvas) this.canvas.style.cursor = "default"
-        if (!this.objectDrag || (event.buttons & 1) !== 0) return
-        this.onCanvasMouseUp(event)
     }
 
     objectTooltipContent(object) {
@@ -2293,6 +2292,7 @@ export class ViewWorld extends ViewCanvasBase {
         if (busy) {
             this.cancelResize()
             this.cancelBoxSelection()
+            this.cancelObjectDrag()
         }
         this.busy = busy
         if (this.tableDragDrop) this.tableDragDrop.cancel()
