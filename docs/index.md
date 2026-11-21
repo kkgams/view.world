@@ -262,11 +262,13 @@ used; reopen the Project after editing those source files externally.
 
 The renderer reads the format produced by view.nine: `format: "gams.nine"`,
 `version: 1`, `image` and named `slices` with pixel `bounds` and bounds-relative
-stretch `center`. It supports `nine`, `horizontal`, `vertical` and `region` slices.
+`center`. It supports `nine`, `horizontal`, `vertical` and `region` slices.
 PNG, JPEG and WebP atlas images are supported. Duplicate names, malformed pixel
 rectangles, invalid centers, unknown slice types and out-of-atlas bounds fail.
 
-Nine-slices retain fixed-size corners while stretching edges and center. Each
+Nine-slices retain fixed-size corners. Top and bottom repeat horizontally, left
+and right repeat vertically, and the center repeats on both axes. Tiles keep
+their source size, with the last tile cropped as needed. Each
 slice provides minimum dimensions from its fixed borders and maximum dimensions
 for any fixed axis; border sizes never shrink to fit. The limits come from the
 existing slice geometry, not
@@ -279,15 +281,15 @@ additional authored JSON fields:
 | `vertical` | Fixed at `bounds.width` | From `max(1, bounds.height - center.height)`, no maximum | Top/bottom |
 | `region` | Fixed at `bounds.width` | Fixed at `bounds.height` | None |
 
-At the exact fixed-border minimum, the stretch center on that axis is omitted.
+At the exact fixed-border minimum, the repeating span on that axis is omitted.
 The import form exposes these limits and disables fixed dimensions. Handles stop
 at the applicable limits; sizes outside them in files or numeric edits are rejected. Invalid property edits leave the world
 unchanged. The pause example's `menu-border` has minimum dimensions **641 × 622**.
 
-Horizontal/vertical slices stretch only their active axis in three parts; the
-other axis always retains its source size. A plain region draws at its source
-size and can move but cannot resize. Drawing uses nearest-neighbor sampling;
-no tiling mode is added. Renderer `config.origin` controls destination bounds as for sprites.
+Horizontal/vertical slices repeat the middle segment only along their active
+axis; the other axis stays at its source size. A plain region draws at its source
+size and can move but cannot resize. Drawing uses nearest-neighbor sampling.
+Renderer `config.origin` controls destination bounds as for sprites.
 
 ## Text objects
 

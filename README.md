@@ -49,10 +49,11 @@ object's `slice`, `width` or `height`.
 
 JSON and atlas files must already be inside the Project. Import references the
 JSON without copying it; its `image` remains Project-relative, not JSON-relative.
-Corners keep their source size and edges/center stretch. Each patch provides
+Corners keep their source size, edges repeat along their length, and the center
+repeats on both axes. Partial tiles are cropped to fit. Each patch provides
 minimum dimensions from its fixed borders; smaller sizes are rejected rather
 than scaling those borders. Regions stay at their source size; horizontal and
-vertical slices resize only along their stretch axis. See [nine-slice rendering](docs/index.md#nine-slice-objects).
+vertical slices resize only along their repeat axis. See [nine-slice rendering](docs/index.md#nine-slice-objects).
 
 ## Text objects
 
@@ -79,5 +80,5 @@ change one dimension; corners change both. Dimensions stop at the renderer
 minimum/maximum without flipping (minimum one pixel for rectangles/sprites). Release commits position and width/height together as one undo step;
 Escape cancels. Numeric editing remains available through Properties. Spatial
 groups, regions, locked objects and renderers without resize support have no
-handles. Horizontal/vertical slices show only their two stretch-axis handles.
+handles. Horizontal/vertical slices show only their two handles along the repeat axis.
 See [resizing](docs/index.md#resize-objects) for anchoring and the renderer API.

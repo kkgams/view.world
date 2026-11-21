@@ -112,14 +112,28 @@ function validateSize(size, slice) {
     `nine renderer slice ${slice.name} requires maximum height ${maxHeight}`)
 }
 
-// Each entry is [source offset, source length, destination offset, destination length].
-function segments(length, start, center, target, active) {
-  if (!active) return [[0, length, 0, length]]
+// Each entry is [source offset, destination offset, shared length].
+function segments(length, start, center, target, active, min, max) {
+  const spans = []
+  function add(source, dest, size) {
+    if (size > 0 && dest < max && dest + size > min) spans.push([source, dest, size])
+  }
+  if (!active) {
+    add(0, 0, length)
+    return spans
+  }
   const end = length - start - center
-  const fixed = start + end
-  const middle = target - fixed
-  return [[0, start, 0, start], [start, center, start, middle],
-    [start + center, end, target - end, end]]
+  const middle = target - (start + end)
+  add(0, 0, start)
+  // Skip offscreen repeats without changing where the tile sequence starts.
+  const first = Math.max(0, Math.floor((min - start) / center))
+  const stop = Math.ceil(Math.min(middle, max - start) / center)
+  for (let tile = first; tile < stop; tile++) {
+    const offset = tile * center
+    add(start, start + offset, Math.min(center, middle - offset))
+  }
+  add(start + center, target - end, end)
+  return spans
 }
 
 export function createWorldObjectRenderer({ config }) {
@@ -311,14 +325,20 @@ export function createWorldObjectRenderer({ config }) {
       const { width, height, slice, source } = prepared(object)
       const b = slice.bounds
       const c = slice.type === "region" ? { x: 0, y: 0, width: b.width, height: b.height } : slice.center
-      const xs = segments(b.width, c.x, c.width, width, slice.type === "horizontal" || slice.type === "nine")
-      const ys = segments(b.height, c.y, c.height, height, slice.type === "vertical" || slice.type === "nine")
+      const x = width * originX, y = height * originY
+      const viewport = frame.viewport
+      if (viewport !== undefined) {
+        assert(viewport && [viewport.minX, viewport.minY, viewport.maxX, viewport.maxY].every(Number.isFinite),
+          "nine renderer frame.viewport must have finite bounds")
+      }
+      const xs = segments(b.width, c.x, c.width, width, slice.type === "horizontal" || slice.type === "nine",
+        viewport === undefined ? 0 : viewport.minX + x, viewport === undefined ? width : viewport.maxX + x)
+      const ys = segments(b.height, c.y, c.height, height, slice.type === "vertical" || slice.type === "nine",
+        viewport === undefined ? 0 : viewport.minY + y, viewport === undefined ? height : viewport.maxY + y)
       ctx.imageSmoothingEnabled = false
-      for (const [sy, sh, dy, dh] of ys) {
-        for (const [sx, sw, dx, dw] of xs) {
-          if (sw === 0 || sh === 0 || dw === 0 || dh === 0) continue
-          ctx.drawImage(source, b.x + sx, b.y + sy, sw, sh,
-            dx - width * originX, dy - height * originY, dw, dh)
+      for (const [sy, dy, h] of ys) {
+        for (const [sx, dx, w] of xs) {
+          ctx.drawImage(source, b.x + sx, b.y + sy, w, h, dx - x, dy - y, w, h)
         }
       }
     },

@@ -30,8 +30,8 @@ function fixture({ documents = {}, read, decode } = {}) {
   )
   return { ...module, reads, images, blobs, renderer: config => module.createWorldObjectRenderer({ config: config || {} }) }
 }
-function draws(renderer, obj) {
-  const ctx = new Context(); renderer.draw(ctx, obj, { scale: 2 })
+function draws(renderer, obj, viewport) {
+  const ctx = new Context(); renderer.draw(ctx, obj, { scale: 2, viewport })
   assert.equal(ctx.imageSmoothingEnabled, false)
   return ctx.calls
 }
@@ -72,7 +72,7 @@ for (const mode of ["read", "schema", "json", "decode", "dimensions", "extension
     const r = f.renderer(), old = object(); await r.prepare([old])
     await assert.rejects(r.prepare([object({ nine: "new.json" }), object({ nine: "bad.json", slice: mode === "missing" ? "absent" : "nine" })]))
     assert.equal(f.images[0].closed, 0); assert.ok(f.images.slice(1).every(i => i.closed === 1))
-    assert.equal(draws(r, old).length, 9); assert.throws(() => r.bounds(object({ nine: "new.json" })), /not prepared/)
+    assert.equal(draws(r, old).length, 35); assert.throws(() => r.bounds(object({ nine: "new.json" })), /not prepared/)
     assert.throws(() => r.bounds(object({ slice: "absent" })), /slice not found/)
     const before = f.reads.length; await r.prepare([object({ nine: "new.json" })]); assert.equal(f.reads.length, before + 2)
     assert.equal(f.images[0].closed, 1); r.dispose(); assert.ok(f.images.every(i => i.closed === 1))
@@ -93,12 +93,22 @@ for (const type of ["region", "horizontal", "vertical", "nine"]) {
   test(`${type} draw geometry`, async () => {
     const f = fixture({ documents: { "panels/ui.json": doc("art/atlas.png", [slice(type)]) } })
     const renderer = f.renderer(), obj = object({ slice: type, width: ["region", "vertical"].includes(type) ? 12 : 20, height: ["region", "horizontal"].includes(type) ? 10 : 18 }); await renderer.prepare([obj])
-    const xs = ["region", "vertical"].includes(type) ? [[10, 12, 0, 12]] : [[10, 2, 0, 2], [12, 6, 2, 14], [18, 4, 16, 4]]
-    const ys = ["region", "horizontal"].includes(type) ? [[20, 10, 0, 10]] : [[20, 3, 0, 3], [23, 2, 3, 10], [25, 5, 13, 5]]
+    const xs = ["region", "vertical"].includes(type) ? [[10, 12, 0, 12]] : [[10, 2, 0, 2], [12, 6, 2, 6], [12, 6, 8, 6], [12, 2, 14, 2], [18, 4, 16, 4]]
+    const ys = ["region", "horizontal"].includes(type) ? [[20, 10, 0, 10]] : [[20, 3, 0, 3], [23, 2, 3, 2], [23, 2, 5, 2], [23, 2, 7, 2], [23, 2, 9, 2], [23, 2, 11, 2], [25, 5, 13, 5]]
     assert.deepEqual(draws(renderer, obj), ys.flatMap(([sy, sh, dy, dh]) => xs.map(([sx, sw, dx, dw]) => [sx, sy, sw, sh, dx, dy, dw, dh])))
     assert.deepEqual(f.reads, [["fs/fs::read-text", "panels/ui.json"], ["fs/fs::read-file", "art/atlas.png"]])
   })
 }
+test("viewport skips offscreen tiles without shifting their phase or cropping them", async () => {
+  const r = fixture().renderer({ origin: [0.5, 0.5] })
+  const obj = object({ width: 1200, height: 800 })
+  await r.prepare([obj])
+  assert.deepEqual(draws(r, obj, { minX: -2, minY: 0, maxX: 1, maxY: 1 }), [
+    [12, 23, 6, 2, -4, -1, 6, 2],
+  ])
+  assert.deepEqual(draws(r, obj, { minX: 600, minY: 0, maxX: 610, maxY: 1 }), [])
+})
+
 test("undersize rejects preparation instead of shrinking borders", async () => {
   const r = fixture().renderer(), obj = object({ width: 3, height: 4 })
   await assert.rejects(r.prepare([obj]), /minimum width 6.*height 8/)
@@ -159,7 +169,7 @@ test("undersized staged document preserves old cache and closes staged atlas", a
   await assert.rejects(r.prepare([object({ nine: "new.json", width: 5 })]), /minimum width 6.*height 8/)
   assert.equal(f.images[0].closed, 0)
   assert.equal(f.images[1].closed, 1)
-  assert.equal(draws(r, old).length, 9)
+  assert.equal(draws(r, old).length, 35)
   assert.throws(() => r.bounds(object({ nine: "new.json" })), /not prepared/)
   r.dispose()
 })
@@ -171,7 +181,7 @@ for (const type of ["region", "horizontal", "vertical"]) {
     await assert.rejects(r.prepare([object({ nine: "new.json", slice: type, ...size })]), /maximum/)
     assert.equal(f.images[0].closed, 0)
     assert.equal(f.images[1].closed, 1)
-    assert.equal(draws(r, old).length, 9)
+    assert.equal(draws(r, old).length, 35)
     assert.throws(() => r.bounds(object({ nine: "new.json", slice: type, ...size })), /not prepared/)
     r.dispose()
   })
@@ -229,7 +239,7 @@ for (const type of ["nine", "horizontal", "vertical"]) {
     assert.deepEqual(f.nineSliceLimits(s), expected)
     const obj = object({ slice: type, width: expected.minWidth, height: expected.minHeight })
     await r.prepare([obj])
-    assert.deepEqual(draws(r, obj), [[10,20,12,10,0,0,expected.minWidth,expected.minHeight]])
+    assert.deepEqual(draws(r, obj), [[10,20,expected.minWidth,expected.minHeight,0,0,expected.minWidth,expected.minHeight]])
     r.dispose()
   })
 }
@@ -279,8 +289,9 @@ test("local Project opens the grouped pause scene with every atlas slice", async
   assert.deepEqual(f.nineSliceLimits(document.slices.find(s => s.name === props.slice)), { minWidth: 641, minHeight: 622 })
   assert.deepEqual(renderer.bounds({ props }), { minX: -0, minY: -0, maxX: props.width, maxY: props.height })
   const calls = draws(renderer, { props })
-  assert.equal(calls.length, 9)
+  assert.equal(calls.length, 20)
   assert.deepEqual(calls[0], [26, 155, 232, 297, 0, 0, 232, 297])
-  assert.deepEqual(calls[4], [258, 452, 63, 137, 232, 297, props.width - 641, props.height - 622])
+  assert.deepEqual(calls[6], [258, 452, 63, 137, 232, 297, 63, 137])
+  assert.deepEqual(calls[13], [258, 452, 8, 128, 358, 434, 8, 128])
   renderer.dispose()
 })
